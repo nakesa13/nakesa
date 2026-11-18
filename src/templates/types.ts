@@ -39,6 +39,10 @@ export interface SectionDef {
   needsCitation?: boolean;
   /** Bagian berisi analisis atas pasien -> angka klinis diperiksa terhadap isian. */
   patientSpecific?: boolean;
+  /** Tahap B: id bagian baku yang dipakai untuk menyusun isi (bila berbeda dari id). */
+  ref?: string;
+  /** Tahap B: bagian diisi mahasiswa sendiri (kind=data tanpa sumber otomatis). */
+  manual?: boolean;
 }
 
 export interface TemplateDef {

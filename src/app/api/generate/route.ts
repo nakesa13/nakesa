@@ -2,7 +2,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { AiConfigError, ProviderError, generateSection } from "@/lib/ai";
 import { analyzeSection, renderDataSection } from "@/lib/case";
 import { guard, isInput, parseSources } from "@/lib/guard";
+import { parseOutlineItem, resolveSection } from "@/lib/outline";
 import { getTemplate } from "@/templates";
+import type { SectionDef } from "@/templates/types";
 
 export async function POST(req: Request) {
   const blocked = guard(req);
@@ -16,7 +18,14 @@ export async function POST(req: Request) {
   }
 
   const tpl = getTemplate(String(body.docType));
-  const section = tpl?.sections.find((s) => s.id === body.sectionId);
+  // Tahap B: bagian dari struktur template mahasiswa. Instruksi AI dibangun ulang di server, bukan diterima dari klien.
+  let section: SectionDef | undefined;
+  if (tpl && body.item !== undefined) {
+    const it = parseOutlineItem(body.item);
+    section = it && it.id === body.sectionId ? resolveSection(tpl.type, it) : undefined;
+  } else {
+    section = tpl?.sections.find((s) => s.id === body.sectionId);
+  }
   const sources = parseSources(body.sources ?? []);
   if (!tpl || !section || !isInput(body.input) || !sources) {
     return Response.json({ error: "Data permintaan tidak valid." }, { status: 400 });
@@ -28,12 +37,12 @@ export async function POST(req: Request) {
     let stripped: string[] = [];
 
     if (section.kind === "data") {
-      text = renderDataSection(tpl.type, section.id, input);
+      text = renderDataSection(tpl.type, section.ref ?? section.id, input);
     } else if (section.kind === "ai") {
       if (tpl.type === "RJ" && !sources.some((s) => (s.content ?? "").length >= 500)) {
         return Response.json({ error: "Teks jurnal belum ada. Unggah PDF jurnal atau tempel teksnya di langkah 'Jurnal'." }, { status: 400 });
       }
-      const r = await generateSection(tpl.type, section.id, input, sources);
+      const r = await generateSection(tpl.type, section.id, input, sources, section);
       text = r.text;
       stripped = r.stripped;
     }

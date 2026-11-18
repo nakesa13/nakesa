@@ -3,25 +3,29 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DocType, Input, SectionWarnings, Source } from "@/lib/types";
 import { TEMPLATES, resolveTitle } from "@/templates";
 import type { FieldDef, SectionDef, StepDef } from "@/templates/types";
-import { analyzeSection, journalSourceFromInput, renderDataSection } from "@/lib/case";
+import { analyzeSection, journalSourceFromInput, renderDataSection, KOSONG } from "@/lib/case";
 import { DRAFT_PREFIX, IDENTITY_IDS, LIBRARY_KEY, SETTINGS_DEFAULT, SETTINGS_KEY, apiDocx, apiPost, safeFileName, saveBlob, type Settings } from "@/lib/client";
 import { useHydrated, useLocalState } from "@/lib/useLocalState";
 import { Icon } from "./Icon";
 import { JournalField } from "./JournalField";
 import { SourceManager } from "./SourceManager";
 import { TemplateStep } from "./TemplateStep";
-import { loadTemplate, type StoredTemplate } from "@/lib/templateStore";
+import { loadTemplate, saveTemplate, type StoredTemplate } from "@/lib/templateStore";
+import { OutlineStep } from "./OutlineStep";
+import { dropDynamicTexts, resolveSection, visibleStepIds, type OutlineItem } from "@/lib/outline";
 
 interface Draft {
   input: Input;
   sources: Source[];
   texts: Record<string, string>;
   step: number;
+  /** Tahap B: struktur bab dari template mahasiswa. null = struktur bawaan NAKESA. */
+  outline?: OutlineItem[] | null;
 }
-const EMPTY: Draft = { input: {}, sources: [], texts: {}, step: 0 };
+const EMPTY: Draft = { input: {}, sources: [], texts: {}, step: 0, outline: null };
 const EMPTY_LIB: Source[] = [];
 
-type Step = StepDef | { id: "format"; title: string; description?: string; fields: FieldDef[] } | { id: "referensi"; title: string; description?: string; fields: FieldDef[] } | { id: "hasil"; title: string; description?: string; fields: FieldDef[] };
+type Step = StepDef | { id: "format"; title: string; description?: string; fields: FieldDef[] } | { id: "struktur"; title: string; description?: string; fields: FieldDef[] } | { id: "referensi"; title: string; description?: string; fields: FieldDef[] } | { id: "hasil"; title: string; description?: string; fields: FieldDef[] };
 
 export function Wizard({ docType }: { docType: DocType }) {
   const tpl = TEMPLATES[docType];
@@ -52,15 +56,20 @@ export function Wizard({ docType }: { docType: DocType }) {
     };
   }, [docType]);
 
-  const steps: Step[] = useMemo(
-    () => [
+  const outline = draft.outline ?? null;
+  // Tahap B: bagian dokumen mengikuti struktur dari template mahasiswa bila sudah dikonfirmasi; bila tidak, struktur bawaan.
+  const sections: SectionDef[] = useMemo(() => (outline ? outline.map((i) => resolveSection(docType, i)) : tpl.sections), [outline, tpl, docType]);
+
+  const steps: Step[] = useMemo(() => {
+    const vis = visibleStepIds(docType, outline);
+    return [
       { id: "format" as const, title: "Format", fields: [] },
-      ...tpl.steps,
+      { id: "struktur" as const, title: "Struktur", fields: [] },
+      ...tpl.steps.filter((s) => !vis || vis.has(s.id)),
       ...(docType !== "RJ" ? [{ id: "referensi" as const, title: "Referensi", description: "Daftar pustaka dibuat dari sumber di sini, bukan oleh AI.", fields: [] }] : []),
       { id: "hasil" as const, title: "Hasil", fields: [] },
-    ],
-    [tpl, docType]
-  );
+    ];
+  }, [tpl, docType, outline]);
   const step = Math.min(draft.step, steps.length - 1);
   const cur = steps[step];
 
@@ -88,22 +97,22 @@ export function Wizard({ docType }: { docType: DocType }) {
   // ---- teks bagian ----
   const textOf = (s: SectionDef): string => {
     if (s.id in draft.texts) return draft.texts[s.id];
-    return s.kind === "data" ? renderDataSection(docType, s.id, effectiveInput) : "";
+    return s.kind === "data" ? renderDataSection(docType, s.ref ?? s.id, effectiveInput) : "";
   };
   const setText = (id: string, text: string) => setDraft((d) => ({ ...d, texts: { ...d.texts, [id]: text } }));
 
-  const aiSections = tpl.sections.filter((s) => s.kind === "ai");
+  const aiSections = sections.filter((s) => s.kind === "ai");
   // Tanpa sumber berisi, AI memang tidak boleh mengutip: peringatan "belum ada rujukan" per bagian hanya noise, cukup satu pesan di atas.
   const hasUsableSource = sources.some((s) => (s.content ?? "").trim().length >= 200);
   const warnings = useMemo(() => {
     const out: Record<string, SectionWarnings> = {};
-    for (const s of tpl.sections) {
+    for (const s of sections) {
       if (s.kind !== "ai") continue;
       const t = s.id in draft.texts ? draft.texts[s.id] : "";
       if (t) out[s.id] = analyzeSection(docType, s, t, effectiveInput, sources);
     }
     return out;
-  }, [tpl, docType, draft.texts, effectiveInput, sources]);
+  }, [sections, docType, draft.texts, effectiveInput, sources]);
 
   const warnCount = Object.values(warnings).filter((w) => w.unknownMarkers.length || (hasUsableSource && w.uncitedParagraphs) || w.unsupportedNumbers.length).length;
   const doneCount = aiSections.filter((s) => (draft.texts[s.id] ?? "").trim()).length;
@@ -135,7 +144,7 @@ export function Wizard({ docType }: { docType: DocType }) {
     setBusy((b) => ({ ...b, [def.id]: true }));
     setSecErr((e) => ({ ...e, [def.id]: "" }));
     try {
-      const r = await apiPost<{ text: string; stripped: string[] }>("/api/generate", { docType, sectionId: def.id, input: effectiveInput, sources }, settings.accessCode);
+      const r = await apiPost<{ text: string; stripped: string[] }>("/api/generate", { docType, sectionId: def.id, ...(outline ? { item: outline.find((i) => i.id === def.id) } : {}), input: effectiveInput, sources }, settings.accessCode);
       setText(def.id, r.text);
       setStripped((s) => ({ ...s, [def.id]: r.stripped }));
     } catch (e) {
@@ -163,7 +172,8 @@ export function Wizard({ docType }: { docType: DocType }) {
   // ---- unduh ----
   const download = async () => {
     const empty = aiSections.filter((s) => !(draft.texts[s.id] ?? "").trim());
-    if (empty.length && !window.confirm(`${empty.length} bagian AI masih kosong dan akan tampil tanpa isi di dokumen. Tetap unduh?`)) return;
+    const emptyManual = sections.filter((s) => s.manual && !textOf(s).trim());
+    if ((empty.length || emptyManual.length) && !window.confirm(`${empty.length} bagian AI dan ${emptyManual.length} bagian isi-sendiri masih kosong dan akan tampil tanpa isi (bagian isi-sendiri ditulis "${KOSONG}"). Tetap unduh?`)) return;
     setDl({ busy: true, error: "" });
     try {
       const judul = (effectiveInput.judul ?? "").trim() || (docType === "RJ" ? effectiveInput.j_title ?? "" : "") || tpl.name;
@@ -174,12 +184,12 @@ export function Wizard({ docType }: { docType: DocType }) {
           style: settings.style,
           identity: Object.fromEntries(IDENTITY_IDS.map((k) => [k, effectiveInput[k] ?? ""])),
           sources,
-          sections: tpl.sections.map((s) => ({
+          sections: sections.map((s) => ({
             id: s.id,
             title: resolveTitle(s, effectiveInput),
             level: s.level,
             kind: s.kind,
-            text: s.kind === "heading" ? "" : textOf(s),
+            text: s.kind === "heading" ? "" : s.manual && !textOf(s).trim() ? KOSONG : textOf(s),
           })),
         },
         settings.accessCode,
@@ -190,6 +200,23 @@ export function Wizard({ docType }: { docType: DocType }) {
     } catch (e) {
       setDl({ busy: false, error: e instanceof Error ? e.message : "Gagal membuat file." });
     }
+  };
+
+  // ---- Tahap B: struktur dari template ----
+  const hasDynamicTexts = Object.keys(draft.texts).some((k) => /^o\d+$/.test(k));
+  const onTemplateChange = (r: StoredTemplate | null) => {
+    // Template dihapus atau diganti file lain: struktur lama tidak berlaku lagi.
+    if (!r || r.savedAt !== tplRec?.savedAt) setDraft((d) => (d.outline ? { ...d, outline: null, texts: dropDynamicTexts(d.texts) } : d));
+    setTplRec(r);
+  };
+  const adoptOutline = (items: OutlineItem[], samples: { h1: number | null; h2: number | null; h3: number | null }) => {
+    setDraft((d) => ({ ...d, outline: items, texts: dropDynamicTexts(d.texts) }));
+    if (!tplRec) return;
+    // Format judul per tingkat mengikuti judul nyata di template, bukan tebakan Tahap A.
+    const s = tplRec.mapping.samples;
+    const rec: StoredTemplate = { ...tplRec, mapping: { ...tplRec.mapping, samples: { ...s, h1: samples.h1 ?? s.h1, h2: samples.h2 ?? s.h2, h3: samples.h3 ?? s.h3 } } };
+    setTplRec(rec);
+    void saveTemplate(docType, rec);
   };
 
   const reset = () => {
@@ -268,9 +295,29 @@ export function Wizard({ docType }: { docType: DocType }) {
         ))}
       </ol>
 
-      {cur.id === "format" && <TemplateStep docType={docType} record={tplRec} loading={tplLoading} onChange={setTplRec} accessCode={settings.accessCode} />}
+      {cur.id === "format" && <TemplateStep docType={docType} record={tplRec} loading={tplLoading} onChange={onTemplateChange} accessCode={settings.accessCode} />}
 
-      {cur.id !== "hasil" && cur.id !== "referensi" && cur.id !== "format" && (
+      {cur.id === "struktur" &&
+        (tplRec ? (
+          <OutlineStep
+            docType={docType}
+            record={tplRec}
+            outline={outline}
+            hasTexts={hasDynamicTexts}
+            onAdopt={adoptOutline}
+            onChange={(items) => setDraft((d) => ({ ...d, outline: items }))}
+            onReset={() => setDraft((d) => ({ ...d, outline: null, texts: dropDynamicTexts(d.texts) }))}
+          />
+        ) : (
+          <section className="card p-5">
+            <h2 className="text-lg font-semibold">Struktur dokumen</h2>
+            <p className="mt-1 text-sm text-muted">
+              Langkah ini aktif bila Anda mengunggah template kampus di langkah Format: bab dan subbab dokumen akan mengikuti judul di template Anda. Tanpa template, dokumen memakai struktur bawaan NAKESA. Tekan Lanjut untuk meneruskan.
+            </p>
+          </section>
+        ))}
+
+      {cur.id !== "hasil" && cur.id !== "referensi" && cur.id !== "format" && cur.id !== "struktur" && (
         <section className="card p-5">
           <h2 className="text-lg font-semibold">{cur.title}</h2>
           {cur.description && <p className="mb-4 mt-1 text-sm text-muted">{cur.description}</p>}
@@ -343,7 +390,7 @@ export function Wizard({ docType }: { docType: DocType }) {
             </p>
           </div>
 
-          {tpl.sections.map((s) => {
+          {sections.map((s) => {
             const title = resolveTitle(s, effectiveInput);
             if (s.kind === "heading") {
               return (
@@ -359,7 +406,7 @@ export function Wizard({ docType }: { docType: DocType }) {
               <article key={s.id} className="card p-4">
                 <div className="flex flex-wrap items-start gap-2">
                   <h4 className="flex-1 text-sm font-semibold">{title}</h4>
-                  {s.kind === "data" && <span className="badge badge-mute">Dari isian Anda</span>}
+                  {s.kind === "data" && <span className="badge badge-mute">{s.manual ? "Isi sendiri" : "Dari isian Anda"}</span>}
                   {s.kind === "ai" && s.patientSpecific && <span className="badge badge-warn">Analisis pasien: tinjau</span>}
                 </div>
                 <details className="mt-1 text-xs text-muted">
@@ -372,7 +419,7 @@ export function Wizard({ docType }: { docType: DocType }) {
                   rows={Math.min(18, Math.max(5, Math.ceil(text.length / 90) + 2))}
                   value={text}
                   onChange={(e) => setText(s.id, e.target.value)}
-                  placeholder={s.kind === "ai" ? "Klik 'Tulis bagian ini' atau ketik sendiri." : ""}
+                  placeholder={s.kind === "ai" ? "Klik 'Tulis bagian ini' atau ketik sendiri." : s.manual ? "Ketik sendiri dari data yang sebenarnya." : ""}
                 />
 
                 <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -380,7 +427,7 @@ export function Wizard({ docType }: { docType: DocType }) {
                     <button className="btn btn-sm" onClick={() => genOne(s)} disabled={!!busy[s.id]}>
                       <Icon name="spark" className="h-3.5 w-3.5" /> {busy[s.id] ? "Menulis…" : text.trim() ? "Tulis ulang" : "Tulis bagian ini"}
                     </button>
-                  ) : (
+                  ) : s.manual ? null : (
                     <button className="btn btn-sm" onClick={() => setDraft((d) => { const t = { ...d.texts }; delete t[s.id]; return { ...d, texts: t }; })}>
                       Susun ulang dari isian
                     </button>

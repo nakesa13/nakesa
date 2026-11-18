@@ -206,9 +206,11 @@ export async function generateSection(
   docType: DocType,
   sectionId: string,
   input: Input,
-  sources: Source[]
+  sources: Source[],
+  /** Tahap B: definisi bagian yang dibangun server dari struktur template mahasiswa. */
+  override?: SectionDef
 ): Promise<AiResult> {
-  const section = TEMPLATES[docType].sections.find((s) => s.id === sectionId);
+  const section = override ?? TEMPLATES[docType].sections.find((s) => s.id === sectionId);
   if (!section || section.kind !== "ai") throw new Error("Bagian tidak dikenal");
 
   const { prompt, usable } = buildPrompt(docType, section, input, sources);

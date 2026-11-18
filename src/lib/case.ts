@@ -54,6 +54,10 @@ export function journalSourceFromInput(input: Input): Source | null {
 }
 
 export function renderDataSection(docType: DocType, sectionId: string, input: Input): string {
+  // Tahap B: judul "Pengkajian" tanpa pemisahan subjektif/objektif di template kampus.
+  if (docType === "LK" && sectionId === "pengkajian") {
+    return [renderDataSection("LK", "subjektif", input), renderDataSection("LK", "objektif", input)].join("\n\n");
+  }
   if (docType === "LK") {
     switch (sectionId) {
       case "subjektif":
