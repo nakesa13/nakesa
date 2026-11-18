@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DocType, Input, SectionWarnings, Source } from "@/lib/types";
 import { TEMPLATES, resolveTitle } from "@/templates";
@@ -8,21 +9,14 @@ import { DRAFT_PREFIX, IDENTITY_IDS, LIBRARY_KEY, SETTINGS_DEFAULT, SETTINGS_KEY
 import { useHydrated, useLocalState } from "@/lib/useLocalState";
 import { Icon } from "./Icon";
 import { JournalField } from "./JournalField";
-import { SourceManager } from "./SourceManager";
+import { SourceManager, nextSourceId } from "./SourceManager";
 import { TemplateStep } from "./TemplateStep";
 import { loadTemplate, saveTemplate, type StoredTemplate } from "@/lib/templateStore";
 import { OutlineStep } from "./OutlineStep";
 import { dropDynamicTexts, resolveSection, visibleStepIds, type OutlineItem } from "@/lib/outline";
+import { EMPTY_DRAFT, type Draft } from "@/lib/draft";
+import { CASE_KEY, EMPTY_CASE, buildInput, isSharedField, searchKeywords, type SharedCase } from "@/lib/kasus";
 
-interface Draft {
-  input: Input;
-  sources: Source[];
-  texts: Record<string, string>;
-  step: number;
-  /** Tahap B: struktur bab dari template mahasiswa. null = struktur bawaan NAKESA. */
-  outline?: OutlineItem[] | null;
-}
-const EMPTY: Draft = { input: {}, sources: [], texts: {}, step: 0, outline: null };
 const EMPTY_LIB: Source[] = [];
 
 type Step = StepDef | { id: "format"; title: string; description?: string; fields: FieldDef[] } | { id: "struktur"; title: string; description?: string; fields: FieldDef[] } | { id: "referensi"; title: string; description?: string; fields: FieldDef[] } | { id: "hasil"; title: string; description?: string; fields: FieldDef[] };
@@ -31,8 +25,10 @@ export function Wizard({ docType }: { docType: DocType }) {
   const tpl = TEMPLATES[docType];
   const hydrated = useHydrated();
   const [settings] = useLocalState<Settings>(SETTINGS_KEY, SETTINGS_DEFAULT);
-  const [draft, setDraft] = useLocalState<Draft>(DRAFT_PREFIX + docType, EMPTY);
+  const [draft, setDraft] = useLocalState<Draft>(DRAFT_PREFIX + docType, EMPTY_DRAFT);
+  const [sharedCase, setSharedCase] = useLocalState<SharedCase>(CASE_KEY, EMPTY_CASE);
   const [library, setLibrary] = useLocalState<Source[]>(LIBRARY_KEY, EMPTY_LIB);
+  const [libMsg, setLibMsg] = useState("");
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -73,19 +69,20 @@ export function Wizard({ docType }: { docType: DocType }) {
   const step = Math.min(draft.step, steps.length - 1);
   const cur = steps[step];
 
-  // ---- nilai isian (identitas diisi dari Pengaturan bila belum diubah) ----
-  const value = (id: string): string => {
-    if (id in draft.input) return draft.input[id];
-    if ((IDENTITY_IDS as readonly string[]).includes(id)) return settings[id as (typeof IDENTITY_IDS)[number]] ?? "";
-    return "";
+  // ---- nilai isian: identitas dari Pengaturan, usulan dari Kasus, isian draf, dan Kasus bersama (Tahap C) ----
+  const effectiveInput: Input = useMemo(() => buildInput(docType, draft.input, settings, sharedCase), [docType, draft.input, settings, sharedCase]);
+  const value = (id: string): string => effectiveInput[id] ?? "";
+  // Jenis asuhan dan kasus pada LP/LK disimpan satu kali di Kasus bersama, bukan di draf.
+  const patchInput = (p: Record<string, string>) => {
+    const mine: Record<string, string> = {};
+    const shared: SharedCase = {};
+    for (const [k, v] of Object.entries(p)) {
+      if (isSharedField(docType, k)) (shared as Record<string, string>)[k] = v;
+      else mine[k] = v;
+    }
+    if (Object.keys(mine).length) setDraft((d) => ({ ...d, input: { ...d.input, ...mine } }));
+    if (Object.keys(shared).length) setSharedCase((c) => ({ ...c, ...shared }));
   };
-  const effectiveInput: Input = useMemo(() => {
-    const base: Input = {};
-    for (const k of IDENTITY_IDS) base[k] = settings[k] ?? "";
-    return { ...base, ...draft.input };
-  }, [draft.input, settings]);
-
-  const patchInput = (p: Record<string, string>) => setDraft((d) => ({ ...d, input: { ...d.input, ...p } }));
   const sources: Source[] = useMemo(() => {
     if (docType === "RJ") {
       const j = journalSourceFromInput(effectiveInput);
@@ -219,9 +216,23 @@ export function Wizard({ docType }: { docType: DocType }) {
     void saveTemplate(docType, rec);
   };
 
+  // Jurnal di Reading Journal bisa dipakai sebagai sumber di LP/LK lewat Pustaka Saya.
+  const saveJournalToLibrary = () => {
+    const j = sources[0];
+    if (!j) return;
+    if (library.some((l) => (j.doi && l.doi === j.doi) || l.title === j.title)) {
+      setLibMsg("Jurnal ini sudah ada di Pustaka Saya.");
+      return;
+    }
+    const { id: _id, ...rest } = j;
+    void _id;
+    setLibrary((l) => [...l, { ...rest, id: nextSourceId(l), content: rest.content?.slice(0, 12_000) }]);
+    setLibMsg("Tersimpan. Ambil dari Pustaka Saya di langkah Referensi pada LP atau LK untuk mengutipnya.");
+  };
+
   const reset = () => {
     if (window.confirm("Hapus semua isian dan hasil untuk dokumen ini?")) {
-      setDraft(EMPTY);
+      setDraft(EMPTY_DRAFT);
       setStripped({});
       setSecErr({});
       setErrors({});
@@ -277,6 +288,19 @@ export function Wizard({ docType }: { docType: DocType }) {
         <h1 className="text-2xl font-semibold">{tpl.name}</h1>
         <p className="mt-1 text-sm text-muted">{tpl.description}</p>
       </div>
+
+      {sharedCase.kasus || sharedCase.jenis_asuhan ? (
+        <div className="rounded-md border border-line bg-card p-3 text-sm">
+          <p>
+            <b>Kasus bersama:</b> {[sharedCase.jenis_asuhan, sharedCase.kasus].filter(Boolean).join(" · ")}
+            {docType === "RJ" ? " — topik jurnal terisi dari kasus ini (boleh diubah)." : " — dipakai juga oleh dokumen lain."}{" "}
+            <Link href="/kasus" className="text-brand underline">
+              Kelola
+            </Link>
+          </p>
+          {docType === "RJ" && searchKeywords(sharedCase) && <p className="mt-1 text-xs text-muted">Kata kunci untuk mencari jurnal: {searchKeywords(sharedCase)}</p>}
+        </div>
+      ) : null}
 
       {/* Stepper */}
       <ol className="flex flex-wrap gap-2">
@@ -385,6 +409,14 @@ export function Wizard({ docType }: { docType: DocType }) {
               </p>
             )}
             {dl.error && <p className="mt-3 text-sm text-red-600">{dl.error}</p>}
+            {docType === "RJ" && sources[0] && (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button className="btn btn-sm" onClick={saveJournalToLibrary}>
+                  Simpan jurnal ke Pustaka Saya
+                </button>
+                {libMsg && <span className="text-xs text-muted">{libMsg}</span>}
+              </div>
+            )}
             <p className="mt-3 text-xs text-muted">
               Ini draf. Tinjau setiap bagian sebelum dikumpulkan. Penanda seperti [S1] otomatis menjadi sitasi dan daftar pustaka di file Word. Bagian bertanda kuning perlu pengecekan Anda.
             </p>

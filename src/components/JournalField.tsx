@@ -40,14 +40,14 @@ export function JournalField({
     setBusy("pdf");
     setMsg(null);
     try {
-      const r = await apiUpload<{ text: string; pages: number; truncated: boolean; chars: number }>("/api/extract-pdf", file, accessCode);
+      const r = await apiUpload<{ text: string; pages: number | null; truncated: boolean; chars: number }>("/api/extract-source", file, accessCode);
       const patch: Patch = { j_text: r.text };
       const found = DOI_IN_TEXT.exec(r.text.slice(0, 4000));
       if (found && !value("j_doi")) patch.j_doi = found[1].replace(/[.,;]+$/, "");
       onPatch(patch);
       setMsg({
         kind: "ok",
-        text: `Teks terbaca dari ${r.pages} halaman (${r.chars.toLocaleString("id-ID")} karakter)${r.truncated ? "; hanya 60.000 karakter pertama dipakai" : ""}.${patch.j_doi ? " DOI terdeteksi, klik 'Ambil metadata' untuk memverifikasi." : ""} Periksa metadata di bawah.`,
+        text: `Teks terbaca${r.pages ? ` dari ${r.pages} halaman` : ""} (${r.chars.toLocaleString("id-ID")} karakter)${r.truncated ? "; hanya 60.000 karakter pertama dipakai" : ""}.${patch.j_doi ? " DOI terdeteksi, klik 'Ambil metadata' untuk memverifikasi." : ""} Periksa metadata di bawah.`,
       });
     } catch (e) {
       setMsg({ kind: "err", text: e instanceof Error ? e.message : "Gagal membaca PDF." });
@@ -87,18 +87,18 @@ export function JournalField({
     <div className="space-y-4">
       <div className="card p-4">
         <h3 className="mb-1 text-sm font-semibold">1. Teks jurnal</h3>
-        <p className="help mb-2">Ringkasan hanya dibuat dari teks ini. PDF hasil scan (gambar) tidak terbaca; tempel teksnya manual.</p>
+        <p className="help mb-2">Ringkasan hanya dibuat dari teks ini. Unggah jurnal dalam bentuk PDF, Word (.docx), atau .txt; boleh juga tempel teksnya. PDF hasil scan (gambar) tidak terbaca.</p>
         <input
-          aria-label="Unggah PDF jurnal"
+          aria-label="Unggah file jurnal"
           type="file"
-          accept="application/pdf"
+          accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
           className="block w-full text-sm file:mr-3 file:rounded-md file:border file:border-line file:bg-card file:px-3 file:py-2 file:text-sm"
           disabled={busy === "pdf"}
           onChange={(e) => onPdf(e.target.files?.[0])}
         />
-        {busy === "pdf" && <p className="mt-2 text-sm text-muted">Membaca PDF…</p>}
+        {busy === "pdf" && <p className="mt-2 text-sm text-muted">Membaca file…</p>}
         <label className="label mt-3" htmlFor={`${uid}-text`}>Teks jurnal ({text.length.toLocaleString("id-ID")} karakter)</label>
-        <textarea id={`${uid}-text`} className="field font-mono text-xs" rows={8} value={text} onChange={(e) => onPatch({ j_text: e.target.value })} placeholder="Hasil baca PDF muncul di sini. Bisa juga ditempel/diedit manual." />
+        <textarea id={`${uid}-text`} className="field font-mono text-xs" rows={8} value={text} onChange={(e) => onPatch({ j_text: e.target.value })} placeholder="Hasil baca file muncul di sini. Bisa juga ditempel/diedit manual." />
         {text.length > 0 && text.length < 500 && <p className="mt-1 text-xs text-red-600">Minimal 500 karakter agar ringkasan dapat dibuat.</p>}
       </div>
 

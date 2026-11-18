@@ -202,3 +202,11 @@ export function parseAuthors(raw: string): Author[] {
 export function authorsToText(authors: Author[]): string {
   return authors.map((a) => (a.given ? `${a.family}, ${a.given}` : a.family)).join("\n");
 }
+
+const DOI_IN_TEXT = /\b(10\.\d{4,9}\/[^\s"<>]+?)(?=[\s"<>]|[.,;)]*(?:\s|$))/;
+
+/** DOI pertama yang tertulis di awal teks (halaman depan jurnal), atau null. */
+export function findDoi(text: string): string | null {
+  const m = DOI_IN_TEXT.exec(text.slice(0, 4000));
+  return m ? m[1].replace(/[.,;]+$/, "") : null;
+}

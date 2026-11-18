@@ -9,6 +9,7 @@ const NAV: { group: string; items: { href: string; label: string; icon: string }
   {
     group: "Buat Dokumen",
     items: [
+      { href: "/kasus", label: "Kasus & Konsistensi", icon: "link" },
       { href: "/lp", label: "Laporan Pendahuluan (LP)", icon: "file" },
       { href: "/lk", label: "Laporan Kasus (LK)", icon: "heart" },
       { href: "/rj", label: "Reading Journal", icon: "journal" },

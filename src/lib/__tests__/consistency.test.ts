@@ -1,0 +1,120 @@
+import { describe, expect, it } from "vitest";
+import { TEMPLATES } from "../../templates";
+import type { DocType, Source } from "../types";
+import { checkConsistency, hasToken, keywords, type DocSnap } from "../consistency";
+import { buildInput, isSharedField, searchKeywords, sharedInput, suggestedInput } from "../kasus";
+
+const snap = (type: DocType, p: Partial<DocSnap> = {}): DocSnap => ({ type, started: true, input: {}, sections: TEMPLATES[type].sections, texts: {}, sources: [], ...p });
+const src = (p: Partial<Source> = {}): Source => ({ id: "S1", type: "jurnal", title: "Efek tablet besi pada anemia", authors: [{ family: "Rahma", given: "Sari" }], year: "2022", journal: "Jurnal Uji", doi: "10.1234/abcd", origin: "manual", verified: false, ...p });
+const ids = (f: { id: string }[]) => f.map((x) => x.id);
+
+describe("Kasus bersama", () => {
+  it("jenis asuhan dan kasus hanya untuk LP/LK; Jurnal tidak", () => {
+    expect(isSharedField("LP", "kasus")).toBe(true);
+    expect(isSharedField("LK", "jenis_asuhan")).toBe(true);
+    expect(isSharedField("RJ", "kasus")).toBe(false);
+    expect(isSharedField("LK", "judul")).toBe(false);
+    expect(sharedInput("RJ", { kasus: "x" })).toEqual({});
+  });
+
+  it("kasus bersama mengalahkan isian lama di draf; kolom lain tetap", () => {
+    const i = buildInput("LK", { kasus: "lama", td: "110/70 mmHg" }, {}, { kasus: "Anemia ringan", jenis_asuhan: "Kehamilan (ANC)" });
+    expect(i.kasus).toBe("Anemia ringan");
+    expect(i.jenis_asuhan).toBe("Kehamilan (ANC)");
+    expect(i.td).toBe("110/70 mmHg");
+  });
+
+  it("usulan judul LP dan topik Jurnal dari kasus, tetapi isian draf menang", () => {
+    const c = { kasus: "Anemia", jenis_asuhan: "Kehamilan (ANC)" };
+    expect(suggestedInput("LP", c).judul).toBe("Asuhan Kebidanan pada Ibu Hamil dengan Anemia");
+    expect(suggestedInput("RJ", c).topik).toBe("Anemia");
+    expect(suggestedInput("LK", c)).toEqual({});
+    expect(buildInput("LP", { judul: "Judul saya" }, {}, c).judul).toBe("Judul saya");
+    expect(buildInput("LP", {}, {}, c).judul).toContain("Ibu Hamil");
+    expect(buildInput("RJ", { topik: "ASI eksklusif" }, {}, c).topik).toBe("ASI eksklusif");
+  });
+
+  it("identitas dari Pengaturan, kata kunci pencarian dari kasus", () => {
+    expect(buildInput("LP", {}, { nama: "Siti" }, {}).nama).toBe("Siti");
+    expect(buildInput("LP", {}, { nama: "Siti" }, {}).nim).toBe("");
+    expect(searchKeywords({ kasus: "Anemia", jenis_asuhan: "Kehamilan (ANC)" })).toBe("Anemia Kehamilan");
+    expect(searchKeywords({})).toBe("");
+  });
+});
+
+describe("pembantu pemeriksa", () => {
+  it("kata kunci mengabaikan kata umum dan kata pendek", () => {
+    expect(keywords("Anemia dalam kehamilan pada ibu")).toEqual(["anemia", "kehamilan"]);
+  });
+  it("token dicocokkan sebagai kata utuh", () => {
+    expect(hasToken("pasien ny. sari datang", "ny. s")).toBe(false);
+    expect(hasToken("pasien ny. s datang", "ny. s")).toBe(true);
+    expect(hasToken("td 110/70 mmhg.", "110/70 mmhg")).toBe(true);
+    expect(hasToken("abc", "")).toBe(false);
+  });
+});
+
+describe("pemeriksaan konsistensi", () => {
+  it("tanpa dokumen yang dimulai: tidak ada temuan", () => {
+    const f = checkConsistency([snap("LP", { started: false }), snap("LK", { started: false }), snap("RJ", { started: false })], { kasus: "Anemia" });
+    expect(f).toEqual([]);
+  });
+
+  it("identitas berbeda antar dokumen ditandai; huruf besar/kecil diabaikan", () => {
+    const base = { kasus: "Anemia" };
+    const a = checkConsistency([snap("LP", { input: { nama: "Siti" }, texts: { x: "a" } }), snap("LK", { input: { nama: "Sari" }, texts: { x: "a" } })], base);
+    expect(ids(a)).toContain("identitas-nama");
+    const b = checkConsistency([snap("LP", { input: { nama: "Siti" } }), snap("LK", { input: { nama: "SITI" } })], base);
+    expect(ids(b)).not.toContain("identitas-nama");
+  });
+
+  it("data pasien LK yang muncul di LP ditandai error; nama mirip tidak", () => {
+    const lk = snap("LK", { input: { inisial: "Ny. S", td: "110/70 mmHg" } });
+    const bad = checkConsistency([lk, snap("LP", { texts: { pengertian: "Ibu Ny. S dengan tekanan darah 110/70 mmHg mengalami anemia." } })], { kasus: "Anemia" });
+    const f = bad.find((x) => x.id === "data-pasien-LP");
+    expect(f?.severity).toBe("error");
+    expect(f?.detail).toContain("110/70 mmhg");
+    const ok = checkConsistency([lk, snap("LP", { texts: { pengertian: "Ny. Sari adalah contoh nama lain." } })], { kasus: "Anemia" });
+    expect(ids(ok)).not.toContain("data-pasien-LP");
+  });
+
+  it("sumber yang sama dengan tahun berbeda ditandai", () => {
+    const f = checkConsistency([snap("LP", { sources: [src({ year: "2020" })] }), snap("LK", { sources: [src({ year: "2021" })] })], { kasus: "Anemia" });
+    const s = f.find((x) => x.id.startsWith("sumber-"));
+    expect(s?.severity).toBe("warn");
+    expect(s?.detail).toContain("tahun");
+    const same = checkConsistency([snap("LP", { sources: [src()] }), snap("LK", { sources: [src()] })], { kasus: "Anemia" });
+    expect(same.some((x) => x.id.startsWith("sumber-"))).toBe(false);
+  });
+
+  it("jurnal yang tidak menyebut kasus diberi saran", () => {
+    const long = "hipertensi ".repeat(80);
+    const off = checkConsistency([snap("RJ", { input: { j_title: "Hipertensi", j_text: long } })], { kasus: "Anemia dalam kehamilan" });
+    expect(ids(off)).toContain("jurnal-relevan");
+    const on = checkConsistency([snap("RJ", { input: { j_title: "Hipertensi", j_text: long + " anemia" } })], { kasus: "Anemia dalam kehamilan" });
+    expect(ids(on)).not.toContain("jurnal-relevan");
+  });
+
+  it("langkah asuhan yang hanya ada di salah satu dokumen", () => {
+    const lp = snap("LP", { sections: TEMPLATES.LP.sections.filter((s) => s.id !== "potensial") });
+    const f = checkConsistency([snap("LK"), lp], { kasus: "Anemia" }).find((x) => x.id === "langkah-asuhan");
+    expect(f?.severity).toBe("info");
+    expect(f?.detail).toContain("Diagnosa/masalah potensial");
+    expect(ids(checkConsistency([snap("LK"), snap("LP")], { kasus: "Anemia" }))).not.toContain("langkah-asuhan");
+  });
+
+  it("kelengkapan dan rujukan yang tidak dikenal; error diurutkan paling atas", () => {
+    const f = checkConsistency([snap("LK"), snap("LP", { texts: { pengertian: "Anemia adalah kondisi tertentu [S9]." } })], { kasus: "Anemia" });
+    expect(ids(f)).toContain("ai-kosong-LK");
+    const r = f.find((x) => x.id === "rujukan-LP");
+    expect(r?.severity).toBe("error");
+    expect(r?.detail).toContain("S9");
+    expect(f[0].severity).toBe("error");
+    expect(f.map((x) => x.severity)).toEqual([...f.map((x) => x.severity)].sort((a, b) => ({ error: 0, warn: 1, info: 2 })[a] - ({ error: 0, warn: 1, info: 2 })[b]));
+  });
+
+  it("kasus bersama kosong diingatkan", () => {
+    expect(ids(checkConsistency([snap("LP")], {}))).toContain("kasus-kosong");
+    expect(ids(checkConsistency([snap("RJ")], {}))).not.toContain("kasus-kosong");
+  });
+});

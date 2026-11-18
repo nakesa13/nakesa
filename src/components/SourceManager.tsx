@@ -1,8 +1,8 @@
 "use client";
 import { useId, useState } from "react";
 import type { Source } from "@/lib/types";
-import { authorsToText, parseAuthors } from "@/lib/citations";
-import { apiPost } from "@/lib/client";
+import { authorsToText, findDoi, parseAuthors } from "@/lib/citations";
+import { apiPost, apiUpload } from "@/lib/client";
 import { Icon } from "./Icon";
 
 type Draft = Omit<Source, "id">;
@@ -171,8 +171,47 @@ export function SourceManager({
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  // Hasil baca file yang metadatanya belum lengkap: ditampilkan sebagai formulir terisi isi sumber.
+  const [prefill, setPrefill] = useState<Draft | null>(null);
+  const fileId = useId();
 
   const addDraft = (d: Draft) => onChange([...sources, { ...d, id: nextSourceId(sources) }]);
+
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    setMsg(null);
+    try {
+      const r = await apiUpload<{ text: string; pages: number | null; truncated: boolean; chars: number }>("/api/extract-source", file, accessCode);
+      const content = r.text;
+      const found = findDoi(content);
+      if (found && sources.some((s) => s.doi && s.doi.toLowerCase() === found.toLowerCase())) {
+        setMsg({ kind: "err", text: `DOI ${found} di file ini sudah ada di daftar sumber.` });
+        return;
+      }
+      if (found) {
+        try {
+          const { source } = await apiPost<{ source: Draft }>("/api/doi", { doi: found }, accessCode);
+          addDraft({ ...source, content });
+          setMsg({ kind: "ok", text: `Teks file terbaca dan DOI ${found} terdeteksi: metadata terverifikasi dari Crossref, isi file tersimpan sebagai isi sumber.` });
+          return;
+        } catch {
+          /* DOI tidak dapat diverifikasi: lanjut ke isian manual */
+        }
+      }
+      setAdding(false);
+      setPrefill({ type: "jurnal", title: "", authors: [], year: "", origin: "manual", verified: false, content });
+      setMsg({
+        kind: "ok",
+        text: `Teks terbaca (${r.chars.toLocaleString("id-ID")} karakter${r.truncated ? ", hanya 60.000 karakter pertama dipakai" : ""}). ${found ? "DOI di file tidak dapat diverifikasi." : "DOI tidak ditemukan di file."} Lengkapi metadata di bawah, lalu simpan.`,
+      });
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : "Gagal membaca file." });
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const lookup = async () => {
     if (!doi.trim()) return;
@@ -219,6 +258,39 @@ export function SourceManager({
           </button>
         </div>
         {msg && <p className={`mt-2 text-sm ${msg.kind === "ok" ? "text-emerald-600" : "text-red-600"}`}>{msg.text}</p>}
+        <div className="mt-3 border-t border-line pt-3">
+          <label className="label" htmlFor={fileId}>
+            Atau unggah file jurnal/referensi (PDF, Word .docx, atau .txt)
+          </label>
+          <input
+            id={fileId}
+            type="file"
+            accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+            className="block w-full text-sm file:mr-3 file:rounded-md file:border file:border-line file:bg-card file:px-3 file:py-2 file:text-sm"
+            disabled={uploading}
+            onChange={(e) => {
+              void upload(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          <p className="help mt-1">
+            {uploading ? "Membaca file…" : "Teks file menjadi isi sumber (bisa dikutip AI). Bila ada DOI di halaman depan, metadata diverifikasi otomatis; bila tidak, Anda melengkapi metadata sendiri. File tidak disimpan di server."}
+          </p>
+        </div>
+        {prefill && (
+          <div className="mt-3">
+            <SourceForm
+              key="prefill"
+              initial={prefill}
+              onSave={(d) => {
+                addDraft(d);
+                setPrefill(null);
+                setMsg(null);
+              }}
+              onCancel={() => setPrefill(null)}
+            />
+          </div>
+        )}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button className="btn btn-sm" onClick={() => setAdding((a) => !a)}>
             <Icon name="plus" className="h-4 w-4" /> Isi manual (buku, pedoman, jurnal tanpa DOI)

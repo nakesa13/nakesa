@@ -29,6 +29,16 @@ Keputusan: judul bab dibaca dari template dengan KODE (tanpa AI, gratis), diklas
 - Belum: pratinjau persis (LibreOffice), penafsiran AI untuk judul ambigu, struktur yang dibagi antar dokumen (rencana Tahap C: satu "Kasus" untuk LK/LP/Jurnal + pemeriksa konsistensi).
 - Pratinjau persis via LibreOffice menunggu keputusan VPS/Docker; sementara pratinjau perkiraan di peramban (docx-preview).
 
+## Tahap C (kode selesai, BELUM dijalankan/diuji): kasus bersama, unggah sumber, konsistensi
+- Kasus bersama (`src/lib/kasus.ts`, kunci `nakesa.case`): jenis asuhan dan diagnosis/kasus disimpan SEKALI. LP dan LK membacanya dari sana (tidak disimpan di draf, jadi tidak bisa berbeda). Jurnal memakai kasus sebagai usulan topik (boleh diubah) dan kata kunci pencarian jurnal. LP mendapat usulan judul. Data pasien tetap hanya di draf LK.
+- Halaman `/kasus` (`KasusPage.tsx`): isi kasus, status ketiga dokumen, tautan cari jurnal (Google Scholar), "Mulai kasus baru" (hapus kasus + draf LK/LP; Jurnal, pustaka, template dipertahankan), dan daftar temuan konsistensi.
+- Pemeriksa konsistensi (`src/lib/consistency.ts`, tanpa AI): identitas berbeda antar dokumen; data pasien LK muncul di LP (error) atau Jurnal (cek); sumber yang sama dengan tahun/penulis/jurnal berbeda; jurnal yang tidak menyebut kata kunci kasus; langkah asuhan LK dan LP tidak sama (saran); bagian AI/isi-sendiri belum terisi; penanda [S#] tanpa sumber (error); judul tidak menyebut kasus.
+- Unggah jurnal/referensi (`src/lib/extract.ts`, `/api/extract-source`): PDF, Word (.docx), atau .txt, maks. 10 MB, teks dipotong 60.000 karakter, file tidak disimpan server. Di Pustaka Referensi dan langkah Referensi LP/LK: bila ada DOI di halaman depan, metadata diverifikasi Crossref otomatis dan teks file menjadi isi sumber; bila tidak, formulir metadata terbuka terisi teksnya. Di Reading Journal: unggah PDF/Word/TXT mengisi teks jurnal. Route lama `/api/extract-pdf` tidak lagi dipakai UI (boleh dihapus).
+- Jurnal dari Reading Journal bisa disimpan ke Pustaka Saya (tombol di langkah Hasil) agar dikutip di LP/LK.
+- Tes baru: `consistency.test.ts` (termasuk kasus bersama) dan `extract.test.ts`. Pembacaan PDF tidak diuji otomatis.
+- Catatan: draf lama menyimpan jenis asuhan/kasus di draf; nilai itu kini diabaikan untuk LP/LK (diganti kasus bersama). Indeks langkah draf tersimpan bisa bergeser.
+- Belum: LP/Jurnal yang "dibuat otomatis dari LK" hanya sebatas kasus bersama (topik, judul, kata kunci). Konteks pasien tidak dikirim ke AI untuk LP/Jurnal, sengaja, agar LP tetap umum.
+
 ## Sebelum dipublikasikan (hasil audit)
 - Ganti GROQ_API_KEY (kunci lama sempat tertempel di chat), wajib ACCESS_CODE atau login, rate limit terpusat, header keamanan.
 - Turunkan status `verified` sumber bila isi/jurnal/halaman diubah; rinci peringatan sebelum unduh.
