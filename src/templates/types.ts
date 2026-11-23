@@ -43,6 +43,8 @@ export interface SectionDef {
   ref?: string;
   /** Tahap B: bagian diisi mahasiswa sendiri (kind=data tanpa sumber otomatis). */
   manual?: boolean;
+  /** T10 (Reading Journal): bagian telaah kritis, yaitu penilaian yang terpisah dari ringkasan isi artikel. */
+  appraisal?: boolean;
 }
 
 export interface TemplateDef {

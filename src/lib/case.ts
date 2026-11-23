@@ -4,6 +4,7 @@ import { TEMPLATES } from "@/templates";
 import { extractMarkerIds, parseAuthors } from "./citations";
 import { parseBlocks } from "./markup";
 import { BELUM_DIISI, SERIAL_KEY, ancObjektifBlock, ancSubjektifBlock, findUnsupportedDates, serialText } from "./anc";
+import { findUnsupportedAuthors, findUnsupportedStats, journalDoiCheck, scopeNote } from "./journal";
 
 export const KOSONG = BELUM_DIISI;
 
@@ -50,7 +51,8 @@ export function journalSourceFromInput(input: Input): Source | null {
     url: val(input, "j_url") || undefined,
     content: val(input, "j_text") || undefined,
     origin: val(input, "j_origin") === "crossref" ? "crossref" : "manual",
-    verified: val(input, "j_origin") === "crossref",
+    // T10: DOI yang sah belum tentu artikelnya cocok dengan teks. Bila judul Crossref jelas tidak cocok, status terverifikasi dicabut.
+    verified: val(input, "j_origin") === "crossref" && journalDoiCheck(input) !== "tidak-cocok",
   };
 }
 
@@ -115,6 +117,8 @@ export function renderDataSection(docType: DocType, sectionId: string, input: In
     const vol = [val(input, "j_volume") && `Volume ${val(input, "j_volume")}`, val(input, "j_issue") && `Nomor ${val(input, "j_issue")}`, val(input, "j_pages") && `Halaman ${val(input, "j_pages")}`]
       .filter(Boolean)
       .join(", ");
+    // T10: cakupan teks dicantumkan hanya bila bukan teks lengkap (hanya abstrak, atau PDF terbaca sebagian).
+    const cakupan = scopeNote(input.j_scope);
     return table(
       [
         ["Judul", val(input, "j_title")],
@@ -123,6 +127,7 @@ export function renderDataSection(docType: DocType, sectionId: string, input: In
         ["Nama jurnal", val(input, "j_journal")],
         ["Volume, nomor, halaman", vol],
         ["DOI/URL", val(input, "j_doi") ? `https://doi.org/${val(input, "j_doi")}` : val(input, "j_url")],
+        ...(cakupan ? ([["Cakupan teks yang diringkas", cakupan]] as [string, string][]) : []),
       ],
       ["Unsur", "Keterangan"]
     );
@@ -208,8 +213,13 @@ export function analyzeSection(
     const corpus = caseBlock("LK", input) + "\n" + Object.values(input).join("\n");
     unsupportedNumbers = [...findUnsupportedNumbers(text, corpus), ...findUnsupportedDates(text, corpus)];
   }
+  let unsupportedNames: string[] = [];
   if (docType === "RJ" && def.kind === "ai") {
-    unsupportedNumbers = findUnsupportedAny(text, val(input, "j_text"));
+    const corpus = val(input, "j_text");
+    // T10: semua angka, juga persentase satu digit, nilai p, dan OR/IK, harus ada di teks jurnal; nama penulis juga.
+    unsupportedNumbers = [...new Set([...findUnsupportedAny(text, corpus), ...findUnsupportedStats(text, corpus)])];
+    const known = corpus + "\n" + sources.flatMap((s) => s.authors.map((a) => `${a.given ?? ""} ${a.family}`)).join("\n");
+    unsupportedNames = findUnsupportedAuthors(text, known);
   }
-  return { unknownMarkers, uncitedParagraphs, unsupportedNumbers };
+  return { unknownMarkers, uncitedParagraphs, unsupportedNumbers, ...(unsupportedNames.length ? { unsupportedNames } : {}) };
 }

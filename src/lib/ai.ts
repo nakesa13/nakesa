@@ -4,6 +4,7 @@ import type { SectionDef } from "@/templates/types";
 import { TEMPLATES, resolveTitle } from "@/templates";
 import { caseBlock } from "./case";
 import { sanitizeMarkers } from "./citations";
+import { journalPromptLines } from "./journal";
 
 export type Provider = "anthropic" | "groq";
 
@@ -110,6 +111,11 @@ export function buildPrompt(docType: DocType, section: SectionDef, input: Input,
     lines.push(
       "STATUS SUMBER: tidak ada sumber berisi. Tulis konsep umum yang mapan secara ringkas dan konservatif. Jangan menyebut angka, dosis, ambang nilai, statistik, nama pedoman, nama penulis, atau tahun, dan jangan memakai penanda [S#]."
     );
+  }
+  // T10: Reading Journal hanya meringkas teks artikel. Yang tidak tertulis = "Tidak dilaporkan"; ringkasan dipisah dari telaah kritis.
+  if (docType === "RJ") {
+    const articleText = sources.find((s) => (s.content ?? "").trim().length >= 200)?.content ?? "";
+    lines.push(...journalPromptLines(!!section.appraisal, input, articleText));
   }
   lines.push(`SUMBER:\n${block}`);
   return { prompt: lines.join("\n\n"), usable };

@@ -1,154 +1,137 @@
-# NAKESA: Audit Baseline (T00)
+# NAKESA — Audit Baseline (T00)
 
-Tanggal audit: 24 November 2026. Basis: kode di working tree setelah commit T09.
-Metode: membaca kode sumber dan test. README dan PLAN tidak dijadikan acuan; bila berbeda dengan kode, kode yang benar.
-Batas audit: tidak ada kode yang diubah, `npm test`/`lint`/`tsc`/`build` tidak dijalankan oleh audit ini, `.env.local` tidak dibuka.
-Berkas yang dibaca baris per baris dan yang tidak ditandai di bagian 9.
+Tanggal audit: 2026-11-24
+Jenis: pembacaan statis kode dan dokumen. Tidak ada kode produk yang diubah.
 
-Legenda status: **tested** = ada test otomatis yang mengunci perilakunya; **partial** = ada kodenya tetapi sebagian atau tanpa test; **missing** = belum ada.
+## 0. Batas audit (baca dulu)
 
----
+- **Test, lint, typecheck, dan build TIDAK dijalankan.** Sesi ini tidak punya akses terminal. Semua status "tested" di bawah berarti *ada file test untuk fungsi itu*, bukan *test itu lulus*. Hasil sebenarnya wajib dicek lewat T01.
+- `git status` tidak dijalankan. Riwayat commit dibaca dari `.git/logs/HEAD` (5 entri: 2 commit awal, Tahap B, Tahap C, dan satu entri lain).
+- `.env.local` sengaja tidak dibuka. Hanya `.env.example` yang dibaca.
+- File komponen UI dibaca selektif (Wizard, KasusPage, SourceManager, JournalField, AppShell). Komponen lain (LibraryPage, SettingsPage, TemplateStep, OutlineStep, DraftHint, Icon), halaman `/lp` dan `/rj`, `docx-builder.ts`, `outline.ts`, `markup.ts`, dan modul `src/lib/template/*` selain `package.ts` tidak dibaca baris demi baris. Statusnya di bawah disimpulkan dari file test, README, nav, dan PLAN-UPDATE.
 
 ## 1. Arsitektur
 
-| Aspek | Kondisi |
-|---|---|
-| Framework | Next.js 16.4.6 (App Router, `cacheComponents` dan `partialPrefetching` aktif), React 19.3.0, TypeScript 5, Tailwind 4 (turbopack loader) |
-| Pola | Aplikasi satu paket. Klien (wizard, localStorage) + route handler server yang stateless |
-| Database | Tidak ada. Tidak ada Supabase/ORM di `package.json` |
-| Auth | Tidak ada. Satu-satunya pagar: header `x-access-code` bila env `ACCESS_CODE` diisi |
-| AI | Anthropic SDK (`@anthropic-ai/sdk`) atau Groq lewat `fetch`. Mode uji `NAKESA_MOCK_AI=1` tanpa AI sungguhan |
-| Dokumen | `docx` (buat dari nol), `pizzip` + `@xmldom/xmldom` (bangun di atas template kampus), `unpdf` (baca PDF) |
-| Test | Vitest 5, `environment: "node"`, pola `src/**/*.test.ts`. Tidak ada jsdom, jadi komponen React tidak diuji |
-| CI/CD | Tidak ada (`.github` tidak ada). Gate dijalankan manual |
+Next.js (App Router) + TypeScript, satu monolit, tanpa database dan tanpa login. Semua state pengguna ada di peramban; server hanya memproses permintaan (AI, DOCX, ekstraksi file, DOI) dan tidak menyimpan apa pun.
 
-Pembagian kode:
+```
+Peramban (localStorage + IndexedDB)
+   |  fetch (header x-access-code opsional)
+Next.js route handler  /api/*
+   |-- guard.ts           (kode akses, rate limit per IP di memori, validasi input)
+   |-- ai.ts              (Groq via fetch, atau Anthropic SDK; NAKESA_MOCK_AI=1 = teks contoh)
+   |-- case.ts, citations.ts, outline.ts   (aturan di kode)
+   |-- docx-builder.ts, template/*         (DOCX bawaan atau di atas template kampus)
+   |-- extract.ts, crossref.ts             (ekstraksi file, metadata DOI)
+Layanan luar: Groq API / Anthropic API / Crossref API
+```
 
-- `src/templates/`: definisi LP/LK/RJ sebagai data (langkah formulir, bagian dokumen, instruksi AI). `lk.ts` memuat langkah `anc` dan tipe field `serial` (T09).
-- `src/lib/`: logika murni (tanpa React): `ai.ts` (prompt, Groq/Anthropic, mock), `case.ts` (penyusun bagian data, DATA KASUS, pemeriksa angka AI), `anc.ts` (T09), `lp.ts` (T08), `kasus.ts` (kasus bersama, opt-in), `consistency.ts`, `clinical/` (parse + review Hb/LiLA), `citations.ts`, `crossref.ts`, `extract.ts`, `outline.ts`, `docx-builder.ts`, `markup.ts`, `guard.ts`, `client.ts`, `useLocalState.ts`, `templateStore.ts`, `draft.ts`.
-- `src/lib/template/`: `analyze.ts`, `build.ts`, `mapping.ts`, `package.ts`, `xml.ts`, `types.ts` (membaca dan mengisi template .docx).
-- `src/components/`: `Wizard.tsx` (inti UI semua dokumen), `SerialField`, `JournalField`, `SourceManager`, `TemplateStep`, `OutlineStep`, `KasusPage`, `LibraryPage`, `SettingsPage`, `AppShell`, `DraftHint`, `Icon`.
+Dependensi utama (versi lihat `package.json`): next, react, docx, pizzip, unpdf, @anthropic-ai/sdk, vitest, tailwind.
 
-Alur utama: pengguna mengisi wizard (draf di localStorage) -> klien memanggil `/api/generate` per bagian -> server membangun prompt dari `DATA KASUS` + sumber berisi, memanggil AI, membuang penanda `[S#]` yang tidak sah, mengembalikan teks + peringatan -> pengguna meninjau -> `/api/docx` menyusun .docx (sitasi dan daftar pustaka disusun kode).
+## 2. Route halaman dan API
 
-## 2. Halaman dan route API
+Halaman (dari `AppShell.tsx` dan `src/app`): `/` beranda, `/lp`, `/lk`, `/rj`, `/kasus`, `/sumber`, `/pengaturan`.
 
-Halaman: `/` (beranda), `/lp`, `/lk`, `/rj` (ketiganya memakai `Wizard`), `/kasus` (kasus bersama, konsistensi, telaah klinis), `/sumber` (Pustaka Referensi), `/pengaturan`.
-
-Route API (semua `POST`, semua lewat `guard()`):
-
-| Route | Batas/jam per IP | Fungsi | Validasi utama | Test |
+| Endpoint | File | Fungsi | Pelindung | Catatan |
 |---|---|---|---|---|
-| `/api/generate` | 200 (default) | Tulis satu bagian AI atau susun bagian data | `docType`, `sectionId`/`item` (diparse ulang di server), `isInput` (maks 120 kolom, 80 rb karakter), `parseSources` (maks 40 sumber); RJ: kolom pasien dibuang, teks jurnal minimal 500 karakter | **tested** langsung lewat `POST` (`standalone-generate.test.ts`) |
-| `/api/docx` | 100 | Susun .docx, opsional di atas template (multipart) | Maks 60 bagian, panjang teks dipotong, template maks 8 MB + magic `PK` + `parseMapping` | builder **tested**; route **tidak** diuji |
-| `/api/doi` | 60 | Metadata Crossref | Regex DOI, host tetap `api.crossref.org`, timeout 12 dtk | **tidak ada test** (`crossref.ts` tanpa test) |
-| `/api/extract-source` | 60 | Baca teks PDF/.docx/.txt unggahan | Maks 10 MB, deteksi tipe dari isi, teks minimal 200 karakter, potong 60 rb karakter | logika (`extract.ts`) **tested** tanpa PDF; route **tidak** diuji |
-| `/api/extract-pdf` | 60 | Baca teks PDF | Maks 10 MB, magic `%PDF-` | **tidak ada test**. **Tidak dipanggil klien mana pun** (kode mati, lihat risiko R7) |
-| `/api/template/analyze` | 60 | Analisis template .docx | Maks 8 MB, ekstensi `.docx`, magic `PK` | analisis **tested** dengan 3 fixture; route **tidak** diuji |
+| POST /api/generate | `src/app/api/generate/route.ts` | Tulis satu bagian (AI atau susunan kode) | guard 200/jam, validasi input, sumber diparse ketat | Instruksi AI dibangun ulang di server dari ref baku; klien tidak bisa menyuntik instruksi |
+| POST /api/docx | `src/app/api/docx/route.ts` | Susun .docx (bawaan atau template unggahan) | guard 100/jam, batas 60 bagian, template maks 8 MB, cek magic "PK" | Template dikirim per permintaan |
+| POST /api/doi | `src/app/api/doi/route.ts` | Metadata dari Crossref | guard 60/jam | Host tujuan tetap (api.crossref.org) |
+| POST /api/extract-source | `src/app/api/extract-source/route.ts` | Teks dari PDF/DOCX/TXT | guard 60/jam, maks 10 MB | Dipakai JournalField dan SourceManager |
+| POST /api/extract-pdf | `src/app/api/extract-pdf/route.ts` | Teks dari PDF | guard 60/jam, maks 10 MB | Tampak duplikat dan tidak dipakai komponen yang dibaca; kandidat dihapus |
+| POST /api/template/analyze | `src/app/api/template/analyze/route.ts` | Analisis struktur template .docx | guard 60/jam, maks 8 MB, ekstensi dan magic | |
 
-`guard.ts`: bila `ACCESS_CODE` terisi, header `x-access-code` harus sama persis. Pembatas laju: `Map` di memori proses, kunci IP dari `x-forwarded-for` (elemen pertama), default 200/jam (`RATE_LIMIT_PER_HOUR`).
+Tidak ada route untuk: impor URL, login, penyimpanan, admin, atau reviewer akademik.
 
 ## 3. Penyimpanan
 
-Server tidak menyimpan apa pun (file diproses di memori; `Cache-Control: no-store` pada respons berisi data).
+| Data | Lokasi | Key | Catatan |
+|---|---|---|---|
+| Draf dokumen (isian, sumber, teks, langkah, outline) | localStorage | `nakesa.draft.LP/LK/RJ` | Draf LK memuat data klinis pasien (isian mahasiswa) |
+| Kasus bersama | localStorage | `nakesa.case` | Satu kasus saja; sumber migrasi untuk T06 |
+| Pengaturan (identitas, gaya rujukan, **kode akses**) | localStorage | `nakesa.settings` | Kode akses tersimpan polos |
+| Pustaka Saya | localStorage | `nakesa.library` | Isi sumber dipotong 12.000 karakter |
+| Template kampus | IndexedDB | db `nakesa`, store `templates` | Dikirim ke server tiap generate DOCX |
+| Tema | localStorage | `nakesa.theme` | |
 
-Peramban:
+Server tidak menyimpan data. Batas localStorage (sekitar 5 MB) belum ditangani selain try/catch diam-diam di `useLocalState.ts`.
 
-| Penyimpanan | Kunci | Isi |
-|---|---|---|
-| localStorage | `nakesa.settings` | Identitas penyusun, gaya rujukan, **`accessCode` dalam teks biasa** |
-| localStorage | `nakesa.draft.LP` / `.LK` / `.RJ` | `Draft`: `input`, `sources`, `texts`, `step`, `outline` |
-| localStorage | `nakesa.case` | Kasus bersama: `jenis_asuhan`, `kasus`, `linked` per dokumen |
-| localStorage | `nakesa.library` | Pustaka Referensi (daftar `Source`) |
-| localStorage | `nakesa.theme` | Terang/gelap |
-| IndexedDB | db `nakesa`, store `templates`, kunci = jenis dokumen | Template kampus: nama, ukuran, byte file, analisis, mapping, `savedAt` |
+## 4. Test, lint, build
 
-Catatan: tidak ada versi skema, migrasi, atau pemilik data. Satu "ruang kerja" per peramban. `useLocalState` memakai nilai awal bila JSON rusak, dan tulisan berikutnya menimpa data rusak itu.
-
-## 4. Variabel lingkungan (hanya nama)
-
-`AI_PROVIDER`, `GROQ_API_KEY`, `GROQ_MODEL`, `GROQ_MODEL_LONG`, `GROQ_JOURNAL_CHARS`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ACCESS_CODE`, `RATE_LIMIT_PER_HOUR`, `CROSSREF_MAILTO`, `NAKESA_MOCK_AI`. Khusus test: `NAKESA_OUT` (menulis berkas contoh dari `template.test.ts`). Tidak ada validasi env saat start.
-
-## 5. Test
-
-14 berkas di `src/lib/__tests__/` (+ `fixtures.ts`):
-
-| Berkas | Cakupan |
+| Item | Status |
 |---|---|
-| `anc.test.ts` | T09: waktu, serial tidak saling menimpa, `[belum diisi]`, anti-fabrication, data pasien tidak ke RJ |
-| `case.test.ts` | Penyusun bagian data, angka klinis/angka jurnal tak berdukungan |
-| `citations.test.ts` | Penanda, sanitasi, APA/Vancouver, daftar pustaka |
-| `clinical.test.ts` | Pembaca Hb/LiLA/trimester, klasifikasi Hb, `reviewClinical` |
-| `consistency.test.ts` | Kasus bersama dan `checkConsistency` |
-| `docx.test.ts` | Builder .docx (isi hanya diperiksa bila `pandoc` terpasang, lihat R8) |
-| `extract.test.ts` | .docx, .txt, pemotongan, tipe palsu, .docx rusak |
-| `groq.test.ts` | Klien Groq (fetch di-stub), pemilihan penyedia/model |
-| `lp.test.ts` | T08 |
-| `outline.test.ts` | Pembacaan struktur template, klasifikasi, keamanan butir dari klien |
-| `standalone.test.ts` | T07: tiga generator mandiri, opt-in, tanpa data pasien ke RJ |
-| `standalone-generate.test.ts` | Route `/api/generate` dengan mock AI (T07/T08/T09) |
-| `template.test.ts` | Template bergaya Word, format langsung, placeholder, karakter kontrol, entri folder ZIP |
+| Runner | Vitest, `vitest.config.mts`, pola `src/**/*.test.ts`, environment node |
+| File test (9) di `src/lib/__tests__/` | `case`, `citations`, `clinical`, `consistency`, `docx`, `extract`, `groq`, `outline`, `template`; plus `fixtures.ts` |
+| Script npm | `test`, `lint`, `build` ada; **script `typecheck` tidak ada** (`tsconfig.json` strict, `noEmit`; `npx tsc --noEmit` bisa dijalankan langsung) |
+| Lint | ESLint flat config (`eslint.config.mjs`, next core-web-vitals + typescript) |
+| Mock AI | `NAKESA_MOCK_AI=1` hanya dihormati di `generateSection` (`ai.ts`). Test Groq memakai `fetch` palsu (`vi.stubGlobal`), jadi tidak butuh kunci atau jaringan |
+| Test komponen/UI, test route API, E2E, CI | **tidak ada** |
+| Hasil terakhir test/lint/tsc/build | **tidak diketahui** (tidak dijalankan di audit ini) |
+| Kelemahan test | `docx.test.ts` memeriksa isi hanya bila `pandoc` terpasang; bila tidak, test selesai diam-diam tanpa memeriksa isi |
 
-Semua test berjalan tanpa API key (AI di-mock atau `fetch` di-stub). Tidak ada: test komponen/UI, test E2E, test route `docx`/`doi`/`extract-*`/`template/analyze`, test PDF nyata (tidak ada fixture PDF), test jalur Anthropic.
+## 5. Status fitur
 
-Hasil `npm test`/`lint`/`tsc`/`build` terakhir: dilaporkan pengguna hijau setelah T09; tidak diverifikasi ulang oleh audit ini.
+Legenda: tested = ada file test (hasil belum diverifikasi); partial = sebagian jalan/teruji; untested = kode ada tanpa test; missing = belum ada.
 
-## 6. Status fitur terhadap peta tugas
+| Fitur | Status | Lokasi | Catatan |
+|---|---|---|---|
+| Wizard LP/LK/RJ, edit per bagian, tulis ulang | partial | `components/Wizard.tsx`, `templates/*` | Tidak ada test UI. Generate berurutan; refresh tidak menghilangkan draf (localStorage) |
+| Generate per bagian (route) | untested | `api/generate/route.ts`, `lib/ai.ts` | Provider Groq teruji dengan fetch palsu; route dan prompt tidak |
+| Penanda sitasi [S#] dan penghapusan ID tak dikenal | tested | `lib/citations.ts` | `citations.test.ts` |
+| Daftar pustaka APA/Vancouver oleh kode | tested | `lib/citations.ts` | Kasus DOI tak ketemu, duplikat, yatim belum ada |
+| Data klinis tidak dikarang (`[belum diisi]`, angka asing ditandai) | tested | `lib/case.ts` | `case.test.ts`; bukan jaminan, hanya penanda |
+| Ringkasan RJ: angka harus ada di teks jurnal | tested | `lib/case.ts` | `findUnsupportedAny`; p-value dan penulis tidak diperiksa terpisah |
+| DOCX bawaan | tested | `lib/docx-builder.ts` | Pemeriksaan isi bergantung pandoc |
+| Template kampus Tahap A | tested | `lib/template/*` | `template.test.ts` (3 fixture). Batas ukuran total terbuka di `package.ts`; tes zip bomb dan path traversal belum ada |
+| Outline dinamis Tahap B | tested | `lib/outline.ts` | `outline.test.ts` lengkap; menurut `PLAN-UPDATE.md` belum pernah dijalankan (T02) |
+| Kasus bersama dan pemeriksa konsistensi Tahap C | tested | `lib/kasus.ts`, `lib/consistency.ts`, `components/KasusPage.tsx` | `consistency.test.ts`; menurut `PLAN-UPDATE.md` belum diverifikasi (T03) |
+| Ekstraksi PDF/DOCX/TXT | partial | `lib/extract.ts` | Teruji: docx, txt, biner palsu, docx rusak, terlalu pendek, terlalu panjang. Belum teruji: PDF valid, PDF scan, PDF rusak, file terlalu besar (cek ada di route) |
+| Impor DOI (Crossref) | untested | `lib/crossref.ts` | Tidak ada test. Metadata ditandai `verified: true`; tidak ada pencocokan isi PDF dengan DOI |
+| Impor URL | missing | — | Kolom URL hanya teks manual; server tidak mengambil URL (jadi belum ada permukaan SSRF) |
+| Provenance sumber (asal, tanggal, metode ekstraksi, hash) | missing | `lib/types.ts` | Hanya `origin` (crossref/manual) dan `verified` (boolean) |
+| Status sumber bertingkat (imported ... guideline-approved) | missing | — | T13 |
+| Reading Journal dari PDF/DOCX/TXT/DOI | partial | `components/JournalField.tsx` | Ada. Belum ada: tanda "tidak dilaporkan", deteksi DOI tidak cocok, pemisahan ringkasan vs critical appraisal |
+| Critical appraisal | missing | — | T18 |
+| Telaah klinis Lapis 1 (Hb, LiLA) | tested | `lib/clinical/review.ts`, `parse.ts`, `KasusPage.tsx` | `clinical.test.ts`. **Berbeda dari rancangan T15–T17**, lihat bagian 6 |
+| Telaah klinis Lapis 2 (LLM + kutipan pedoman) | missing | — | T17 |
+| Bank pedoman klinis | missing | — | T16 |
+| Validator data ANC (tanggal, HPHT, TP) | missing | — | T15 |
+| Academic Reviewer | missing | — | T14 |
+| Multi-workspace / multi-kasus | missing | `lib/kasus.ts` | Satu key `nakesa.case` |
+| Tiga generator mandiri dari dashboard | partial | `app/page.tsx`, `/lp` `/lk` `/rj` | LP/LK memakai kasus bersama, tapi tidak ada alur "buat tanpa dokumen lain" yang eksplisit dan tidak ada reuse opt-in |
+| Export PDF | missing | — | Hanya .docx; pratinjau browser belum ada |
+| Auth, role, database, RLS, storage privat | missing | — | Fase 3 |
+| Quota/rate limit terdistribusi | missing | `lib/guard.ts` | Rate limit `Map` di memori |
+| CI, E2E, monitoring, backup, staging | missing | — | Tidak ada `.github/`, Playwright, atau konfigurasi env bertingkat |
+| Privasi: data inventory, ekspor/hapus data, notice | missing | — | Belum diperiksa apakah form LK memuat peringatan data pasien |
 
-| Tugas | Fitur | Status | Lokasi | Catatan |
-|---|---|---|---|---|
-| T01 | Test gate tanpa API key | **partial** | `vitest.config.mts`, `NAKESA_MOCK_AI`, `__tests__/` | Berjalan tanpa key. Test inti belum lengkap (lihat bagian 5). README mendokumentasikan perintahnya |
-| T02 | Outline dinamis | **partial** | `lib/outline.ts`, `OutlineStep.tsx`, `outline.test.ts` | Heading Word, pola BAB/huruf/angka, bertingkat, batas 60: tested. **Celah**: hanya LK zona "kasus" yang tak terpetakan menjadi *manual*; judul asing di zona lain (dan di LP/RJ) tetap **ditulis AI** (`genericSection`), bertentangan dengan aturan T02 |
-| T03 | Kasus bersama dan consistency | **partial** | `lib/consistency.ts`, `lib/kasus.ts`, `KasusPage.tsx` | Consistency tested. Ekstraksi: .docx/.txt/tipe palsu/pendek/panjang tested; **PDF tidak diuji**. `PATIENT_FIELDS` di `consistency.ts` belum memuat kolom ANC |
-| T04 | Impor sumber URL, provenance | **missing** | - | Tidak ada impor URL. Hanya DOI ke host tetap (Crossref). `url` di `Source` hanya metadata. Provenance hanya `origin` + `verified`. DOI di unggahan langsung dipasangkan ke isi tanpa cek kecocokan |
-| T05 | ADR workspace/case/document | **missing** | - | Tidak ada `docs/architecture/` |
-| T06 | Multi-workspace lokal | **missing** | - | Satu ruang kerja per peramban, kunci tetap |
-| T07 | Tiga generator mandiri | **tested** | `lib/kasus.ts`, `Wizard.tsx` | Reuse opt-in dengan konfirmasi; RJ membuang kolom pasien di klien dan server |
-| T08 | LP standalone | **tested** | `lib/lp.ts`, `templates/lp.ts` | Tanda `[perlu referensi]` oleh kode; resume per subbab |
-| T09 | LK ANC terstruktur | **tested** | `lib/anc.ts`, `SerialField.tsx`, `templates/lk.ts` | 12 kolom + serial bertimestamp; `[belum diisi]`; angka dan tanggal karangan ditandai |
-| T10 | Reading Journal | **partial** | `templates/rj.ts`, `case.ts` (`findUnsupportedAny`), `JournalField.tsx` | Ringkasan dari teks artikel, angka asing ditandai, PDF scan ditolak dengan pesan. Belum: test DOI mismatch, penandaan eksplisit "tidak dilaporkan" di semua bagian, test PDF scan |
-| T11 | Template engine | **partial** | `lib/template/*`, `TemplateStep.tsx`, `templateStore.ts` | Tanpa hardcode kampus (default A4, TNR 12, margin 4-3-3-3 hanya bila tanpa template); koreksi manual ada; mapping tersimpan di IndexedDB tetapi **tanpa `templateId`**. Penolakan zip bomb bergantung pada properti internal pizzip (R5); path traversal tidak diperiksa; tidak ada test berkas berbahaya |
-| T12 | Export DOCX/PDF | **partial** | `docx-builder.ts`, `template/build.ts`, `/api/docx` | DOCX dengan sitasi + pustaka dari kode. **PDF tidak ada**, pratinjau berlabel "perkiraan" tidak ada, isi DOCX hanya diperiksa bila pandoc ada |
-| T13 | Reference manager | **partial** | `citations.ts`, `SourceManager.tsx`, `crossref.ts` | Sitasi hanya ke ID yang ada, bibliografi dari kode: tested. Belum: status sumber bertingkat, status turun saat diubah (hanya `verified` -> false saat metadata diedit di UI, tanpa test), test DOI mismatch/duplikat/yatim |
-| T14 | Academic Reviewer | **missing** | - | `consistency.ts` bukan reviewer akademik (tidak menilai bahasa/struktur/kelengkapan isi) |
-| T15 | Data Validator ANC | **partial** | `lib/clinical/` | Ada pembaca Hb/LiLA/trimester dan aturan ber-id + `basis`, tested. **Belum ada**: validasi tanggal/satuan/kronologi/HPHT-TP; kolom ANC terstruktur dan serial **tidak dibaca** oleh `reviewClinical`. Ambang klinis (WHO 2024) tertanam di kode tanpa alur approval (R9) |
-| T16 | Bank pedoman | **missing** | - | Acuan hanya string `BASIS_*` di kode |
-| T17 | Clinical Reviewer ANC | **partial** | `clinical/review.ts`, `KasusPage.tsx` | Hanya lapis aturan deterministik, advisory, tidak menyatakan diagnosis benar. Tanpa lapis LLM, tanpa kutipan pedoman approved, tanpa output JSON bukti + halaman, tanpa test adversarial |
-| T18 | Critical Appraisal | **missing** | - | |
-| T19 | AI safety | **partial** | `ai.ts` (`SYSTEM`), `citations.ts`, `guard.ts` | Aturan "isi dalam tag = data", `[S#]` palsu dibuang server, batas ukuran input. Belum: skema JSON, timeout Anthropic, test prompt injection, perlindungan tag penutup (R4), kebijakan log data pasien |
-| T20 | Evaluasi reviewer | **missing** | - | |
-| T21-T26 | Supabase, auth/role, RLS, cloud, kuota, admin | **missing** | - | Tidak ada dependensi maupun kode. Kuota = `Map` memori |
-| T27 | Billing | **missing** | - | Opsional; model bisnis belum diputuskan di kode/dokumen yang saya baca |
-| T28 | Privasi dan hapus data | **partial** | `templates/lk.ts` (`PRIVASI`), `SettingsPage.tsx` | Hanya teks bantuan "pakai inisial". Tidak ada penegakan, export, retensi, atau dokumen privasi/terms. Hapus draf/pustaka ada; tidak menghapus `nakesa.case` dan template IndexedDB |
-| T29-T32 | CI, E2E, hardening, monitoring, staging | **missing** | - | Tidak ada workflow, Playwright, logging terstruktur, atau pemisahan env |
-| T33-T37 | Beta, remediasi, go/no-go, launch, pasca-launch | **missing** | - | |
+## 6. Temuan dan risiko (urut prioritas)
 
-## 7. Daftar risiko (urut kasar menurut dampak)
+1. **Tidak ada login; akses hanya `ACCESS_CODE` opsional** (`lib/guard.ts`). Bila env kosong, semua API terbuka. Perbandingan kode memakai `!==` (tidak constant-time). Kode akses tersimpan polos di localStorage. Cukup untuk uji lokal, tidak cukup untuk internet.
+2. **Rate limit lemah** (`lib/guard.ts`): `Map` di memori (hilang saat restart, tidak jalan di multi-instance) dan kunci memakai header `x-forwarded-for` yang bisa dipalsukan klien bila server tidak di belakang proxy tepercaya.
+3. **Telaah klinis memuat ambang klinis di kode** (`lib/clinical/review.ts`): Hb per trimester (WHO 2024) dan LiLA 23,5 cm. Ini bertentangan dengan prinsip T15 ("jangan menetapkan ambang klinis sebelum ada pedoman approved") dan T16 (hanya pedoman approved yang boleh dipakai). `BASIS_HB` juga merujuk "menurut jurnal yang mengutipnya" (sumber sekunder). Status keluaran (`sesuai` / `periksa` / `belum-bisa`) berbeda dari empat status T17, dan label UI "Sesuai data" perlu ditinjau terhadap larangan "diagnosis benar". Fitur ini sudah tampil di `/kasus`, jadi perlu keputusan: disembunyikan, diberi label eksperimental, atau dimigrasi ke bank pedoman.
+4. **Ekstraksi DOCX tanpa batas ukuran sebelum dekompresi** (`lib/extract.ts`, `docxToText`): `zip.file(...).asText()` dijalankan sebelum cek 30 juta karakter; zip bomb kecil bisa menghabiskan memori. `lib/template/package.ts` sudah punya cek ukuran total, `extract.ts` belum.
+5. **Injeksi prompt: sebagian terlindungi.** Instruksi server dipisah, isi sumber dibungkus tag, dan marker palsu dibuang (`sanitizeMarkers`). Tetapi isi sumber dan isian tidak di-escape, sehingga teks seperti `</isi_sumber>` di dalam PDF dapat menutup tag lebih awal. Teks sumber dari klien bisa sampai 80.000 karakter per sumber (`lib/guard.ts`). Belum ada test injeksi (T19).
+6. **Metadata Crossref ditandai `verified: true`, dan abstrak otomatis menjadi `content`** (`lib/crossref.ts`). DOI valid tidak berarti isi yang dipakai AI cocok dengan DOI itu; DOI yang ditemukan di teks PDF langsung dipakai tanpa pencocokan judul.
+7. **Ambang "teks tidak terbaca" tidak konsisten:** 500 karakter di `api/extract-pdf`, 200 di `lib/extract.ts`, sementara wizard RJ meminta 500.
+8. **Kode mati/duplikat:** `api/extract-pdf/route.ts`.
+9. **`NAKESA_MOCK_AI=1` tidak dikunci terhadap produksi** (hanya peringatan di `.env.example`).
+10. **Data pasien di localStorage tanpa enkripsi** (draf LK). Belum diperiksa ada tidaknya peringatan "jangan isi nama/NIK/alamat" di form LK; `lib/client.ts` tidak membatasi kolom itu.
+11. **Test lemah di tepi:** tidak ada test untuk route API, `crossref.ts`, PDF nyata, zip bomb, path traversal, dan `docx.test.ts` bisa lolos tanpa memeriksa apa pun.
 
-- **R1. Akses terbuka bila `ACCESS_CODE` kosong.** Semua API publik; siapa pun bisa memakai kuota AI. `ACCESS_CODE` dibandingkan dengan `!==` (bukan perbandingan waktu-konstan) dan disimpan sebagai teks biasa di localStorage.
-- **R2. Pembatas laju lemah.** `Map` di memori (hilang saat restart, tidak dibagi antar instance) dan IP dari `x-forwarded-for` yang bisa dipalsukan bila tidak di belakang proxy tepercaya.
-- **R3. Data hanya di peramban.** Tanpa cadangan atau versi; JSON rusak ditimpa saat tulis berikutnya; tidak ada migrasi skema.
-- **R4. Injeksi lewat tag penutup.** Isian atau isi sumber yang memuat `</data_kasus>`, `</isi_sumber>`, atau `</topik>` tidak dinetralkan sebelum masuk prompt (`ai.ts`). Berlaku juga untuk catatan/nilai pengukuran serial.
-- **R5. Pertahanan zip bomb tidak merata.** `template/package.ts` menjumlah `_data.uncompressedSize` (properti internal pizzip, tidak dijamin ada; bila tak ada, jumlahnya 0 dan pemeriksaan tak berlaku). `extract.ts` (`docxToText`) baru membatasi panjang XML setelah seluruhnya didekompresi. Tidak ada pembatasan jumlah entri atau pemeriksaan path traversal. Tidak ada test berkas berbahaya.
-- **R6. DOI di unggahan tidak diverifikasi terhadap isi.** `SourceManager` memasangkan metadata Crossref dari DOI pertama di 4.000 karakter awal ke isi berkas tanpa memeriksa kecocokan (jurnal yang mengutip DOI lain di halaman depan bisa tertukar).
-- **R7. Route `/api/extract-pdf` tidak dipakai** (klien memakai `/api/extract-source`). Menambah permukaan serangan tanpa manfaat; belum ada test.
-- **R8. Test yang bisa lolos diam-diam.** `docx.test.ts` keluar tanpa asersi isi bila `pandoc` tidak terpasang.
-- **R9. Ambang klinis tertanam di kode** (`clinical/review.ts`: Hb WHO 2024, LiLA 23,5 cm) tanpa alur approval pedoman. Bertentangan dengan arah T15/T16 ("tanpa ambang klinis sebelum pedoman approved").
-- **R10. Folder `debug/` berisi dua berkas .docx** di akar repo dan tidak ada di `.gitignore`. Belum dibuka; perlu dicek apakah ter-track dan apakah memuat data nyata.
-- **R11. Dokumentasi usang.** `README.md` masih menyebut struktur bab tetap ("Tahap B menyusul") dan daftar route tanpa `extract-source`; jangan dipakai sebagai acuan.
-- **R12. Penghapusan data tidak lengkap.** "Hapus semua draf" tidak menghapus `nakesa.case` maupun template di IndexedDB (template bisa memuat data pribadi dari contoh kampus).
-- **R13. Celah T02.** Bagian yang tak terpetakan di luar zona kasus LK ditulis AI, bukan input manual.
+## 7. Yang dicatat sebagai sudah baik
 
-## 8. Rekomendasi urutan (tanpa mengubah rencana)
+- Instruksi AI dibangun ulang di server dari struktur baku (`resolveSection`, `parseOutlineItem`); klien tidak bisa menyuntik instruksi atau mengubah bagian data menjadi bagian AI (diuji di `outline.test.ts`).
+- Bagian LK yang tak terpetakan menjadi isi-sendiri (`manual`), bukan ditulis AI.
+- Daftar pustaka dan sitasi dibuat kode; penanda ke sumber tanpa isi dibuang.
+- Metadata Crossref yang diedit tangan otomatis kehilangan status terverifikasi (`SourceManager.tsx`).
+- Telaah klinis tidak menebak: nilai ganda, trimester tidak terbaca, dan Hb kosong menghasilkan "belum bisa dicek"; selalu menampilkan daftar "belum dicek".
+- Pemeriksa konsistensi hanya memeriksa data, tidak klinis, dan menandai data pasien LK yang muncul di LP/Jurnal.
 
-1. T01: tutup celah test route (`docx`, `doi`, `extract-source`, `template/analyze`), tambah fixture PDF, jadikan pandoc tidak mengikat.
-2. T02 dan T03: perbaiki R13, tambah ANC ke `PATIENT_FIELDS` konsistensi, uji PDF.
-3. T04 dan T11: tutup R5 dan R6 dengan test berkas berbahaya; hapus atau uji `/api/extract-pdf` (R7).
-4. T19: netralkan tag penutup (R4) dengan test injeksi.
-5. T05 sebelum T06 dan seluruh fase SaaS.
+## 8. Rekomendasi urutan
 
-## 9. Cakupan pembacaan audit
-
-Dibaca penuh: `package.json`, `vitest.config.mts`, `next.config.ts`, `.env.example`, `.gitignore`, `README.md`, seluruh route API, `src/templates/*`, `src/lib/{ai,anc,case,citations,client,consistency,crossref,docx-builder,draft,extract,guard,kasus,lp,markup,outline,templateStore,useLocalState}.ts`, `src/lib/clinical/*`, `src/lib/template/{mapping,package,types,xml}.ts`, seluruh berkas test kecuali yang disebut di bawah, komponen `Wizard`, `SerialField`, `JournalField`, `SourceManager`, `TemplateStep`, `OutlineStep`, `KasusPage`, `SettingsPage`, `LibraryPage`, `AppShell`, `DraftHint`, `app/layout.tsx`, `app/page.tsx`.
-
-Tidak dibaca baris per baris: `src/lib/template/analyze.ts`, `src/lib/template/build.ts` (perilakunya dinilai dari `template.test.ts` dan README), `Icon.tsx`, `globals.css`, `PLAN.md`, `PLAN-UPDATE.md`, isi `debug/`, `.env.local`. Jumlah test dan hasil gate tidak dihitung ulang.
+1. T01: tambah script `typecheck`, jalankan empat perintah, pastikan mock AI menutup semua jalur, dokumentasikan. Catat hasil nyata di dokumen ini.
+2. T02 dan T03: verifikasi Tahap B dan C yang kodenya sudah ada.
+3. T04: tutup temuan 4, 6, 7, 8 dan tambah provenance.
+4. Putuskan nasib telaah klinis Lapis 1 (temuan 3) sebelum T14–T17.
+5. T05 (ADR) sebelum menyentuh penyimpanan multi-kasus (T06).

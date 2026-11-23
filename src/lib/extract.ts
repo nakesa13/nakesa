@@ -6,6 +6,8 @@ import { extractText, getDocumentProxy } from "unpdf";
 export const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
 export const MAX_SOURCE_CHARS = 60_000;
 export const MIN_SOURCE_CHARS = 200;
+/** T10: PDF multihalaman dengan teks rata-rata di bawah ini per halaman kemungkinan sebagian berupa gambar (scan). */
+export const LOW_TEXT_PER_PAGE = 300;
 
 export class ExtractError extends Error {
   constructor(
@@ -22,6 +24,8 @@ export interface ExtractedSource {
   truncated: boolean;
   chars: number;
   kind: "pdf" | "docx" | "txt" | "html";
+  /** T10: peringatan yang tidak menggagalkan ekstraksi (mis. PDF terbaca sebagian). Hanya ada bila ada peringatan. */
+  warnings?: string[];
 }
 
 // Karakter kontrol (kecuali tab/baris baru) merusak XML Word dan tampilan; dibuang.
@@ -117,5 +121,15 @@ export async function extractSourceText(bytes: Uint8Array, name: string): Promis
         : "Isi file terlalu pendek atau kosong. Pastikan file berisi teks."
     );
   }
-  return { text: clean.slice(0, MAX_SOURCE_CHARS), pages, truncated: clean.length > MAX_SOURCE_CHARS, chars: clean.length, kind };
+  // T10: PDF yang hanya sebagian terbaca (sisanya gambar/scan) tidak boleh tampak berhasil penuh.
+  const warnings: string[] = [];
+  if (kind === "pdf" && pages !== null && pages >= 3) {
+    const perPage = clean.length / pages;
+    if (perPage < LOW_TEXT_PER_PAGE) {
+      warnings.push(
+        `Teks yang terbaca sangat sedikit (sekitar ${Math.round(perPage)} karakter per halaman dari ${pages} halaman). Sebagian halaman kemungkinan berupa gambar/scan sehingga tidak terbaca; ringkasan hanya dari teks yang terbaca.`
+      );
+    }
+  }
+  return { text: clean.slice(0, MAX_SOURCE_CHARS), pages, truncated: clean.length > MAX_SOURCE_CHARS, chars: clean.length, kind, ...(warnings.length ? { warnings } : {}) };
 }

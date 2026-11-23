@@ -118,7 +118,7 @@ export function Wizard({ docType }: { docType: DocType }) {
     return out;
   }, [sections, docType, draft.texts, effectiveInput, sources]);
 
-  const warnCount = Object.values(warnings).filter((w) => w.unknownMarkers.length || (hasUsableSource && w.uncitedParagraphs) || w.unsupportedNumbers.length).length;
+  const warnCount = Object.values(warnings).filter((w) => w.unknownMarkers.length || (hasUsableSource && w.uncitedParagraphs) || w.unsupportedNumbers.length || w.unsupportedNames?.length).length;
   const needRefCount = aiSections.filter((s) => countNeedsReference(draft.texts[s.id] ?? "") > 0).length;
   // Resume: hanya bagian yang belum ada teksnya. Bagian yang sudah ditulis/diedit tidak pernah ditimpa oleh "Tulis semua".
   const pending = pendingAiSections(sections, draft.texts);
@@ -484,6 +484,7 @@ export function Wizard({ docType }: { docType: DocType }) {
                   <h4 className="flex-1 text-sm font-semibold">{title}</h4>
                   {s.kind === "data" && <span className="badge badge-mute">{s.manual ? "Isi sendiri" : "Dari isian Anda"}</span>}
                   {s.kind === "ai" && s.patientSpecific && <span className="badge badge-warn">Analisis pasien: tinjau</span>}
+                  {s.kind === "ai" && s.appraisal && <span className="badge badge-warn">Telaah kritis: penilaian, bukan isi artikel</span>}
                 </div>
                 <details className="mt-1 text-xs text-muted">
                   <summary className="cursor-pointer">Panduan bagian ini</summary>
@@ -514,6 +515,7 @@ export function Wizard({ docType }: { docType: DocType }) {
                   {w?.unsupportedNumbers.length ? (
                     <span className="badge badge-bad">Angka tidak ditemukan di {docType === "RJ" ? "teks jurnal" : "isian Anda"}: {w.unsupportedNumbers.join(", ")}</span>
                   ) : null}
+                  {w?.unsupportedNames?.length ? <span className="badge badge-bad">Nama penulis tidak ditemukan di teks jurnal: {w.unsupportedNames.join(", ")}</span> : null}
                   {strippedIds.length ? <span className="badge badge-warn">Penanda {strippedIds.join(", ")} dihapus: sumber tanpa isi</span> : null}
                 </div>
                 {secErr[s.id] && <p className="mt-2 text-sm text-red-600">{secErr[s.id]}</p>}

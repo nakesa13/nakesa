@@ -73,4 +73,6 @@ export interface SectionWarnings {
   unknownMarkers: string[];
   uncitedParagraphs: number;
   unsupportedNumbers: string[];
+  /** T10 (Reading Journal): nama penulis yang disebut tetapi tidak ada di teks jurnal. Hanya ada bila ada temuan. */
+  unsupportedNames?: string[];
 }

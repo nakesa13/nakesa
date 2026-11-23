@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import PizZip from "pizzip";
-import { ExtractError, docxToText, extractSourceText } from "../extract";
+import { ExtractError, LOW_TEXT_PER_PAGE, docxToText, extractSourceText } from "../extract";
 import { styledTemplate } from "./fixtures";
 
 describe("unggah jurnal/referensi: ekstraksi teks", () => {
@@ -139,5 +139,66 @@ describe("T03: file kosong, rusak, dan tipe palsu", () => {
     expect(r.text).not.toContain("\u0000");
     expect(r.text.charCodeAt(0)).not.toBe(0xfeff);
     expect(r.text.startsWith("Baris uji")).toBe(true);
+  });
+});
+
+// ---------- T10 ----------
+
+/** PDF dengan satu halaman per elemen (teks kosong = halaman tanpa lapisan teks, seperti hasil scan). Teks tanpa kurung dan garis miring. */
+function pdfPages(pageTexts: string[]): Uint8Array {
+  const n = pageTexts.length;
+  const objs: string[] = [];
+  objs[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objs[2] = `<< /Type /Pages /Kids [${pageTexts.map((_, i) => `${4 + 2 * i} 0 R`).join(" ")}] /Count ${n} >>`;
+  objs[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  pageTexts.forEach((t, i) => {
+    const stream = t ? `BT /F1 10 Tf 20 700 Td (${t}) Tj ET` : "";
+    objs[4 + 2 * i] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + 2 * i} 0 R >>`;
+    objs[5 + 2 * i] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+  });
+  let out = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  for (let i = 1; i < objs.length; i++) {
+    offsets[i] = out.length;
+    out += `${i} 0 obj\n${objs[i]}\nendobj\n`;
+  }
+  const xref = out.length;
+  out += `xref\n0 ${objs.length}\n0000000000 65535 f \n`;
+  for (let i = 1; i < objs.length; i++) out += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objs.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(out);
+}
+const filler = (len: number): string => "anemia pada ibu hamil ".repeat(Math.ceil(len / 21)).slice(0, len).trim();
+
+describe("T10: PDF scan dan PDF yang hanya sebagian terbaca ditandai", () => {
+  it("semua halaman tanpa lapisan teks (scan murni): ditolak 422 dengan saran menempel teks", async () => {
+    await expect(extractSourceText(pdfPages(["", "", "", "", ""]), "scan.pdf")).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/scan/i) });
+  });
+
+  it("banyak halaman dengan teks sangat sedikit: berhasil, tetapi diberi peringatan agar tidak tampak utuh", async () => {
+    expect(900 / 5).toBeLessThan(LOW_TEXT_PER_PAGE);
+    const r = await extractSourceText(pdfPages([filler(900), "", "", "", ""]), "sebagian.pdf");
+    expect(r.kind).toBe("pdf");
+    expect(r.pages).toBe(5);
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings![0]).toMatch(/5 halaman/);
+    expect(r.warnings![0]).toMatch(/gambar|scan/i);
+  });
+
+  it("PDF dengan teks cukup di setiap halaman tidak diberi peringatan", async () => {
+    const r = await extractSourceText(pdfPages([filler(600), filler(600), filler(600), filler(600)]), "penuh.pdf");
+    expect(r.pages).toBe(4);
+    expect(r.warnings).toBeUndefined();
+  });
+
+  it("PDF kurang dari 3 halaman tidak dinilai per halaman", async () => {
+    const r = await extractSourceText(pdfPages([filler(250), filler(250)]), "pendek.pdf");
+    expect(r.pages).toBe(2);
+    expect(r.warnings).toBeUndefined();
+  });
+
+  it("file teks tidak pernah diberi peringatan halaman", async () => {
+    const r = await extractSourceText(new TextEncoder().encode(filler(400)), "catatan.txt");
+    expect(r.warnings).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@ import type { DocType } from "./types";
 import type { Analysis, Mapping } from "./template/types";
 import type { SectionDef } from "@/templates/types";
 import { TEMPLATES } from "@/templates";
+import { TIDAK_DILAPORKAN } from "./journal";
 
 /**
  * Tahap B: struktur bab mengikuti template kampus.
@@ -261,7 +262,7 @@ function genericSection(docType: DocType, item: OutlineItem): SectionDef {
       ...base,
       guide: "Ringkasan hanya dari teks jurnal yang Anda unggah. Tinjau hasilnya.",
       instruction:
-        "Ringkas isi jurnal yang sesuai dengan judul bagian ini. Angka, persentase, dan nilai p hanya boleh disalin persis dari teks jurnal. Bila tidak dijelaskan di jurnal, tulis 'Tidak dijelaskan dalam jurnal.'",
+        `Ringkas isi jurnal yang sesuai dengan judul bagian ini. Angka, persentase, dan nilai p hanya boleh disalin persis dari teks jurnal. Bila tidak tertulis di jurnal, tulis '${TIDAK_DILAPORKAN}'`,
       words: 150,
     };
   }
