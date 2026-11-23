@@ -86,7 +86,7 @@ export function OutlineStep({
     if (outline.length >= MAX_OUTLINE) return;
     const n = Math.max(0, ...outline.map((i) => Number(i.id.slice(1)))) + 1;
     const last = outline[outline.length - 1];
-    onChange([...outline, { id: `o${n}`, title: "Judul bagian baru", level: last?.level ?? 2, role: "ai", zone: last?.zone ?? "lain" }]);
+    onChange([...outline, { id: `o${n}`, title: "Judul bagian baru", level: last?.level ?? 2, role: "manual", zone: last?.zone ?? "lain" }]);
   };
   const setRole = (i: OutlineItem, v: string) => {
     if (v.startsWith("data:")) update(i.id, { role: "data", ref: v.slice(5) });
@@ -106,7 +106,7 @@ export function OutlineStep({
         </p>
         {count("manual") > 0 && (
           <p className="mt-2 text-xs text-muted">
-            &quot;Isi sendiri&quot; dipakai untuk bagian yang menyangkut data pasien dan judulnya tidak dikenali. AI tidak menulisnya supaya tidak mengarang data klinis.
+            &quot;Isi sendiri&quot; dipakai untuk judul yang tidak dikenali aplikasi. AI tidak menulisnya supaya tidak mengarang isi (terutama data pasien). Bila bagian itu memang uraian teori, ubah sumber isinya menjadi &quot;Ditulis AI&quot;.
           </p>
         )}
         <div className="mt-4 flex flex-wrap gap-2">

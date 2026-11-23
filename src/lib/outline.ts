@@ -91,9 +91,11 @@ function candidates(a: Analysis, m: Mapping): Cand[] {
     const b = body[k];
     let text = clean(b.text);
     // "BAB I" dan "PENDAHULUAN" sering diketik pada dua paragraf: digabung.
+    // Tidak digabung bila baris berikutnya judul bergaya Word di tingkat lain (mis. Heading 2 "Latar Belakang"):
+    // itu subbab tersendiri, bukan lanjutan judul bab.
     if (CHAPTER_ONLY.test(text)) {
       const nx = body[k + 1];
-      if (nx) {
+      if (nx && (nx.level === 0 || nx.level === b.level)) {
         const nt = clean(nx.text);
         if (nt.length <= 100 && patKind(nt) === null) {
           text = `${text} ${nt}`;
@@ -122,7 +124,13 @@ export function extractHeadings(a: Analysis, m: Mapping): Extracted {
       .map((c) => ({ c, k: patKind(c.text) }))
       .filter((x): x is { c: Cand; k: "chapter" | "letter" | "num" } => x.k !== null && x.c.text.length <= (x.k === "num" ? 100 : 120));
     const order = (["chapter", "letter", "num"] as const).filter((k) => withPat.some((x) => x.k === k));
-    heads = withPat.map((x) => ({ block: x.c.block, text: x.c.text, level: (order.indexOf(x.k) + 1) as 1 | 2 | 3 }));
+    // Penomoran angka bertingkat (1. / 1.1 / 1.1.1): kedalaman dari jumlah segmen, ditambahkan di bawah pola yang ada.
+    const numDepth = (t: string): number => (/^(\d+(?:\.\d+)*)/.exec(t)?.[1].split(".").length ?? 1);
+    heads = withPat.map((x) => {
+      const base = order.indexOf(x.k) + 1;
+      const lv = x.k === "num" ? base + numDepth(x.c.text) - 1 : base;
+      return { block: x.c.block, text: x.c.text, level: Math.min(3, lv) as 1 | 2 | 3 };
+    });
   }
   const truncated = heads.length > MAX_OUTLINE;
   heads = heads.slice(0, MAX_OUTLINE);
@@ -143,9 +151,10 @@ const normalize = (t: string): string =>
 
 function zoneOf(norm: string): Zone {
   if (/pendahuluan|latar belakang/.test(norm)) return "pendahuluan";
-  if (/tinjauan (pustaka|teori)|landasan|kajian|konsep|dasar teori|teori/.test(norm)) return "teori";
+  // Batas kata (\b): "kajian" tidak boleh cocok di "pengkajian", dan "saran" tidak boleh cocok di "prasarana".
+  if (/tinjauan (pustaka|teori)|dasar teori|\b(landasan|kajian|konsep|teori)\b/.test(norm)) return "teori";
   if (/pembahasan/.test(norm)) return "pembahasan";
-  if (/penutup|kesimpulan|saran/.test(norm)) return "penutup";
+  if (/\b(penutup|kesimpulan|saran)\b/.test(norm)) return "penutup";
   if (/kasus|asuhan kebidanan|pengkajian|manajemen/.test(norm)) return "kasus";
   return "lain";
 }
@@ -154,10 +163,19 @@ interface Rule {
   z?: Zone[];
   re: RegExp;
   role: "ai" | "data";
-  ref: string;
+  /** Tanpa ref = dikenali, tetapi memakai instruksi umum (bukan bagian baku). */
+  ref?: string;
 }
-const ai = (re: RegExp, ref: string, z?: Zone[]): Rule => ({ re, role: "ai", ref, z });
+const ai = (re: RegExp, ref: string | undefined, z?: Zone[]): Rule => ({ re, role: "ai", ref, z });
 const data = (re: RegExp, ref: string, z?: Zone[]): Rule => ({ re, role: "data", ref, z });
+
+/** Subbab teori yang lazim di BAB II LK. Ditulis AI secara umum (tanpa data pasien) dan wajib bersumber. */
+const THEORY_TOPIC =
+  /pengertian|definisi|etiologi|penyebab|faktor risiko|patofisiologi|manifestasi|tanda dan gejala|gejala|penunjang|diagnostik|penatalaksanaan|penanganan|terapi|komplikasi|epidemiologi|klasifikasi|pencegahan|prognosis/;
+
+/** Aspek asuhan yang dibahas teori-vs-kasus di bab pembahasan LK (mis. "A. Pengkajian"). */
+const DISCUSS_ASPECT =
+  /pengkajian|data (subjektif|objektif)|interpretasi|diagnosa|diagnosis|masalah|potensial|tindakan segera|antisipasi|kolaborasi|perencanaan|rencana|intervensi|implementasi|pelaksanaan|evaluasi/;
 
 const RULES: Record<DocType, Rule[]> = {
   LK: [
@@ -175,6 +193,8 @@ const RULES: Record<DocType, Rule[]> = {
     ai(/konsep (dasar )?asuhan|teori asuhan|manajemen (asuhan )?kebidanan/, "teori_asuhan", ["teori", "lain"]),
     ai(/konsep dasar|konsep teori|landasan teori|teori kasus|tinjauan teori/, "teori_kasus", ["teori", "lain"]),
     ai(/pembahasan|kesenjangan/, "pembahasan", ["pembahasan", "lain"]),
+    ai(DISCUSS_ASPECT, undefined, ["pembahasan"]),
+    ai(THEORY_TOPIC, undefined, ["teori"]),
     ai(/kesimpulan/, "kesimpulan", ["penutup", "lain"]),
     ai(/saran/, "saran", ["penutup", "lain"]),
   ],
@@ -208,10 +228,16 @@ const RULES: Record<DocType, Rule[]> = {
   ],
 };
 
-/** Ubah daftar judul menjadi struktur bagian. Judul yang punya anak hanya menjadi judul (tanpa isi). */
-export function buildOutline(docType: DocType, heads: Heading[]): OutlineItem[] {
+/**
+ * Ubah daftar judul menjadi struktur bagian. Judul yang punya anak hanya menjadi judul (tanpa isi).
+ * Judul yang tidak dikenali aturan mana pun = input manual ("Isi sendiri"), tidak pernah ditulis AI otomatis:
+ * mahasiswa bisa mengubahnya sendiri menjadi "Ditulis AI" di langkah Struktur.
+ */
+export function buildOutline(docType: DocType, allHeads: Heading[]): OutlineItem[] {
+  // Batasi dulu, baru cari anak: judul ke-60 yang anaknya terpotong harus tetap punya isi, bukan jadi judul kosong.
+  const heads = allHeads.slice(0, MAX_OUTLINE);
   let zone: Zone = "lain";
-  return heads.slice(0, MAX_OUTLINE).map((h, i) => {
+  return heads.map((h, i) => {
     const norm = normalize(h.text);
     if (h.level === 1) zone = zoneOf(norm);
     const base = { id: `o${i + 1}`, title: h.text, level: h.level, zone };
@@ -219,9 +245,7 @@ export function buildOutline(docType: DocType, heads: Heading[]): OutlineItem[] 
     if (next && next.level > h.level) return { ...base, role: "heading" as const };
     const r = RULES[docType].find((x) => (!x.z || x.z.includes(zone)) && x.re.test(norm));
     if (r) return { ...base, role: r.role, ref: r.ref };
-    // Bagian kasus yang tidak dikenal berisi data pasien: tidak boleh ditulis AI, diisi mahasiswa sendiri.
-    if (docType === "LK" && zone === "kasus") return { ...base, role: "manual" as const };
-    return { ...base, role: "ai" as const };
+    return { ...base, role: "manual" as const };
   });
 }
 

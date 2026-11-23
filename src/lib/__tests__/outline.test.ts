@@ -136,7 +136,7 @@ describe("klasifikasi struktur LK", () => {
     expect(txt).toContain("110/70 mmHg");
   });
 
-  it("bagian pembahasan tak dikenal ditulis AI dengan pemeriksaan angka pasien", () => {
+  it("bagian pembahasan: aspek asuhan ditulis AI dengan pemeriksaan angka pasien", () => {
     const o = buildOutline("LK", [
       { block: 0, text: "BAB IV PEMBAHASAN", level: 1 },
       { block: 1, text: "A. Pengkajian", level: 2 },
@@ -150,7 +150,7 @@ describe("klasifikasi struktur LK", () => {
 });
 
 describe("klasifikasi LP dan RJ", () => {
-  it("LP: judul teori dipetakan; judul lain tetap ditulis AI secara umum", () => {
+  it("LP: judul teori dipetakan; judul asing menjadi isi-sendiri, bukan ditulis AI (T02)", () => {
     const o = buildOutline("LP", [
       { block: 0, text: "A. Konsep Dasar Anemia", level: 1 },
       { block: 1, text: "1. Pengertian", level: 2 },
@@ -160,9 +160,11 @@ describe("klasifikasi LP dan RJ", () => {
     expect(o[0].role).toBe("heading");
     expect(o[1]).toMatchObject({ role: "ai", ref: "pengertian" });
     expect(o[2]).toMatchObject({ role: "ai", ref: "patofisiologi" });
-    expect(o[3].role).toBe("ai");
+    expect(o[3].role).toBe("manual");
     expect(o[3].ref).toBeUndefined();
-    const s = resolveSection("LP", o[3]);
+    expect(resolveSection("LP", o[3])).toMatchObject({ kind: "data", manual: true });
+    // Mahasiswa boleh mengubahnya sendiri menjadi "Ditulis AI": instruksi umum, tanpa data pasien.
+    const s = resolveSection("LP", { ...o[3], role: "ai" });
     expect(s.kind).toBe("ai");
     expect(s.patientSpecific).toBeFalsy();
     expect(s.instruction).toContain("Jangan menyebut data pasien");
@@ -177,8 +179,83 @@ describe("klasifikasi LP dan RJ", () => {
     const o = buildOutline("RJ", heads);
     expect(o[0]).toMatchObject({ role: "data", ref: "identitas_jurnal" });
     expect(o[1]).toMatchObject({ role: "ai", ref: "metode" });
-    expect(o[2].role).toBe("ai");
-    expect(resolveSection("RJ", o[2]).instruction).toContain("teks jurnal");
+    expect(o[2].role).toBe("manual"); // judul asing: tidak diringkas AI otomatis
+    expect(resolveSection("RJ", { ...o[2], role: "ai" }).instruction).toContain("teks jurnal");
+  });
+});
+
+describe("T02: heading Word, penomoran bertingkat, batas bagian", () => {
+  it("Heading 1 'BAB I' diikuti Heading 2 tidak digabung menjadi satu judul", () => {
+    const { a, m } = stub([["BAB I", 1], ["Latar Belakang", 2], ["Tujuan", 2]]);
+    expect(extractHeadings(a, m).items.map((h) => [h.text, h.level])).toEqual([["BAB I", 1], ["Latar Belakang", 2], ["Tujuan", 2]]);
+  });
+
+  it("'BAB I' + judul di Heading 1 yang sama tetap digabung", () => {
+    const { a, m } = stub([["BAB I", 1], ["PENDAHULUAN", 1], ["Latar Belakang", 2]]);
+    expect(extractHeadings(a, m).items.map((h) => [h.text, h.level])).toEqual([["BAB I PENDAHULUAN", 1], ["Latar Belakang", 2]]);
+  });
+
+  it("penomoran angka 1. / 1.1 / 1.1.1 menjadi tiga tingkat, bukan satu", () => {
+    const { a, m } = stub(["1. Pendahuluan", "1.1 Latar Belakang", "1.1.1 Rumusan", LONG, "2. Metode", "2.1 Desain"]);
+    expect(extractHeadings(a, m).items.map((h) => h.level)).toEqual([1, 2, 3, 1, 2]);
+  });
+
+  it("angka bertingkat di bawah BAB dan huruf dibatasi tingkat 3", () => {
+    const { a, m } = stub(["BAB I PENDAHULUAN", "A. Latar", "1. Sub", "1.1 Subsub"]);
+    expect(extractHeadings(a, m).items.map((h) => h.level)).toEqual([1, 2, 3, 3]);
+  });
+
+  it("judul ke-60 yang anaknya terpotong batas tetap punya isi, bukan jadi judul kosong", () => {
+    const heads: Heading[] = Array.from({ length: 61 }, (_, i): Heading => ({
+      block: i,
+      text: i === 59 ? "A. Pengertian" : `${i + 1}. Etiologi ${i}`,
+      level: i === 60 ? 3 : 2,
+    }));
+    const o = buildOutline("LP", heads);
+    expect(o.length).toBe(60);
+    expect(o[59]).toMatchObject({ role: "ai", ref: "pengertian" });
+  });
+});
+
+describe("T02: judul asing = isi sendiri, bukan ditulis AI", () => {
+  const rows = (xs: [string, 1 | 2 | 3][]): Heading[] => xs.map(([text, level], block) => ({ block, text, level }));
+
+  it("judul yang tak dikenali aturan mana pun menjadi manual di LK, LP, dan RJ", () => {
+    for (const t of ["LK", "LP", "RJ"] as const) {
+      const o = buildOutline(t, rows([["BAB I PENDAHULUAN", 1], ["A. Zebra Kuning Bergaris", 2], ["B. Telaah PICO", 2]]));
+      expect(o[0].role).toBe("heading");
+      for (const i of [o[1], o[2]]) {
+        expect(i.role).toBe("manual");
+        expect(i.ref).toBeUndefined();
+        expect(resolveSection(t, i)).toMatchObject({ kind: "data", manual: true });
+      }
+    }
+  });
+
+  it("LK: subbab teori dan aspek pembahasan yang lazim tetap dikenali; yang asing manual", () => {
+    const o = buildOutline("LK", rows([
+      ["BAB II TINJAUAN TEORI", 1], ["A. Pengertian Anemia", 2], ["B. Etiologi", 2], ["C. Sejarah Penyakit", 2],
+      ["BAB IV PEMBAHASAN", 1], ["A. Pengkajian", 2], ["B. Perencanaan", 2], ["C. Hal Lain", 2],
+    ]));
+    expect(o.map((i) => i.role)).toEqual(["heading", "ai", "ai", "manual", "heading", "ai", "ai", "manual"]);
+    // subbab teori: instruksi umum tanpa data pasien; aspek pembahasan: analisis pasien yang diperiksa angkanya
+    expect(resolveSection("LK", o[1])).toMatchObject({ kind: "ai", needsCitation: true });
+    expect(resolveSection("LK", o[1]).patientSpecific).toBeFalsy();
+    expect(resolveSection("LK", o[5])).toMatchObject({ kind: "ai", patientSpecific: true, needsCitation: true });
+  });
+
+  it("zona: 'Pengkajian' bab tingkat 1 = kasus (bukan teori); 'Sarana dan Prasarana' bukan penutup", () => {
+    const o = buildOutline("LK", rows([["A. Pengkajian", 1], ["1. Data Subjektif", 2], ["B. Sarana dan Prasarana", 1], ["1. Alat", 2]]));
+    expect(o[0].zone).toBe("kasus");
+    expect(o[1]).toMatchObject({ role: "data", ref: "subjektif" }); // data pasien tidak jatuh ke AI
+    expect(o[2].zone).toBe("lain");
+  });
+
+  it("struktur tanpa satu pun judul dikenal tidak menyisakan bagian yang ditulis AI", () => {
+    for (const t of ["LK", "LP", "RJ"] as const) {
+      const o = buildOutline(t, rows([["A. Alfa", 1], ["1. Beta", 2], ["2. Gamma", 2], ["B. Delta", 1]]));
+      expect(o.filter((i) => i.role === "ai")).toEqual([]);
+    }
   });
 });
 
