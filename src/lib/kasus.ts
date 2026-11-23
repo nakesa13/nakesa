@@ -1,5 +1,6 @@
 import type { DocType, Input } from "./types";
 import { IDENTITY_IDS, type Settings } from "./client";
+import { ANC_FIELD_IDS } from "./anc";
 
 /**
  * Kasus bersama (Tahap C), dengan aturan T07: LP, LK, dan Reading Journal adalah generator mandiri.
@@ -48,6 +49,8 @@ export const PATIENT_FIELD_IDS: readonly string[] = [
   "penunjang",
   "implementasi",
   "evaluasi",
+  // T09: kolom ANC terstruktur dan pengukuran serial juga data pasien.
+  ...ANC_FIELD_IDS,
 ];
 
 /** Buang kolom data pasien dari sebuah isian. */

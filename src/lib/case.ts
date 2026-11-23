@@ -3,8 +3,9 @@ import type { SectionDef } from "@/templates/types";
 import { TEMPLATES } from "@/templates";
 import { extractMarkerIds, parseAuthors } from "./citations";
 import { parseBlocks } from "./markup";
+import { BELUM_DIISI, SERIAL_KEY, ancObjektifBlock, ancSubjektifBlock, findUnsupportedDates, serialText } from "./anc";
 
-export const KOSONG = "[belum diisi]";
+export const KOSONG = BELUM_DIISI;
 
 const val = (input: Input, id: string): string => (input[id] ?? "").trim();
 const cell = (s: string): string => (s.replace(/\s*\n\s*/g, "; ").replace(/\|/g, "/").trim() || KOSONG);
@@ -77,7 +78,10 @@ export function renderDataSection(docType: DocType, sectionId: string, input: In
           labelled("Riwayat kesehatan", val(input, "riwayat_kesehatan")),
           labelled("Pola kebiasaan sehari-hari", val(input, "pola_kebiasaan")),
           labelled("Data psikososial dan budaya", val(input, "psikososial")),
-        ].join("\n\n");
+          ancSubjektifBlock(input),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
       case "objektif":
         return [
           "**Pemeriksaan Umum**",
@@ -97,7 +101,10 @@ export function renderDataSection(docType: DocType, sectionId: string, input: In
           labelled("Pemeriksaan fisik", val(input, "pemeriksaan_fisik")),
           labelled("Pemeriksaan kebidanan/bayi", val(input, "pemeriksaan_khusus")),
           labelled("Pemeriksaan penunjang", val(input, "penunjang")),
-        ].join("\n\n");
+          ancObjektifBlock(input),
+        ]
+          .filter(Boolean)
+          .join("\n\n");
       case "implementasi":
         return asNumbered(val(input, "implementasi"));
       case "evaluasi":
@@ -133,7 +140,9 @@ export function caseBlock(docType: DocType, input: Input): string {
     if (step.id === "identitas") continue;
     for (const f of step.fields) {
       if (f.type === "journal" || f.id === "judul") continue;
-      lines.push(`${f.label}: ${val(input, f.id) || KOSONG}`);
+      // Pengukuran serial disimpan sebagai JSON; AI menerima bentuk teks berwaktu, bukan JSON mentah.
+      if (f.type === "serial") lines.push(`${f.label}:\n${serialText(input[SERIAL_KEY])}`);
+      else lines.push(`${f.label}: ${val(input, f.id) || KOSONG}`);
     }
   }
   return lines.join("\n");
@@ -197,7 +206,7 @@ export function analyzeSection(
   let unsupportedNumbers: string[] = [];
   if (docType === "LK" && def.kind === "ai" && def.patientSpecific) {
     const corpus = caseBlock("LK", input) + "\n" + Object.values(input).join("\n");
-    unsupportedNumbers = findUnsupportedNumbers(text, corpus);
+    unsupportedNumbers = [...findUnsupportedNumbers(text, corpus), ...findUnsupportedDates(text, corpus)];
   }
   if (docType === "RJ" && def.kind === "ai") {
     unsupportedNumbers = findUnsupportedAny(text, val(input, "j_text"));

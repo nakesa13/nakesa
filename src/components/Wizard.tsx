@@ -17,6 +17,8 @@ import { dropDynamicTexts, resolveSection, visibleStepIds, type OutlineItem } fr
 import { EMPTY_DRAFT, type Draft } from "@/lib/draft";
 import { CASE_KEY, EMPTY_CASE, buildInput, caseDerivedInput, isLinked, isSharedField, linkConfirmMessage, linkDoc, lpTitleFor, reusePreview, searchKeywords, unlinkDoc, type SharedCase } from "@/lib/kasus";
 import { countNeedsReference, pendingAiSections } from "@/lib/lp";
+import { isAnc } from "@/lib/anc";
+import { SerialField } from "./SerialField";
 
 const EMPTY_LIB: Source[] = [];
 
@@ -57,22 +59,26 @@ export function Wizard({ docType }: { docType: DocType }) {
   // Tahap B: bagian dokumen mengikuti struktur dari template mahasiswa bila sudah dikonfirmasi; bila tidak, struktur bawaan.
   const sections: SectionDef[] = useMemo(() => (outline ? outline.map((i) => resolveSection(docType, i)) : tpl.sections), [outline, tpl, docType]);
 
+  // ---- nilai isian: identitas dari Pengaturan, usulan dari Kasus, isian draf, dan Kasus bersama (Tahap C) ----
+  const effectiveInput: Input = useMemo(() => buildInput(docType, draft.input, settings, sharedCase), [docType, draft.input, settings, sharedCase]);
+  const value = (id: string): string => effectiveInput[id] ?? "";
+  // T09: langkah Data Kehamilan (ANC) hanya muncul untuk asuhan kehamilan.
+  const ancStep = docType === "LK" && isAnc(effectiveInput.jenis_asuhan);
+
   const steps: Step[] = useMemo(() => {
     const vis = visibleStepIds(docType, outline);
     return [
       { id: "format" as const, title: "Format", fields: [] },
       { id: "struktur" as const, title: "Struktur", fields: [] },
-      ...tpl.steps.filter((s) => !vis || vis.has(s.id)),
+      ...tpl.steps.filter((s) => (!vis || vis.has(s.id)) && (s.id !== "anc" || ancStep)),
       ...(docType !== "RJ" ? [{ id: "referensi" as const, title: "Referensi", description: "Daftar pustaka dibuat dari sumber di sini, bukan oleh AI.", fields: [] }] : []),
       { id: "hasil" as const, title: "Hasil", fields: [] },
     ];
-  }, [tpl, docType, outline]);
+  }, [tpl, docType, outline, ancStep]);
   const step = Math.min(draft.step, steps.length - 1);
   const cur = steps[step];
 
-  // ---- nilai isian: identitas dari Pengaturan, usulan dari Kasus, isian draf, dan Kasus bersama (Tahap C) ----
-  const effectiveInput: Input = useMemo(() => buildInput(docType, draft.input, settings, sharedCase), [docType, draft.input, settings, sharedCase]);
-  const value = (id: string): string => effectiveInput[id] ?? "";
+  // ---- penyimpanan isian ----
   // Jenis asuhan dan kasus pada LP/LK disimpan satu kali di Kasus bersama, bukan di draf.
   const patchInput = (p: Record<string, string>) => {
     const mine: Record<string, string> = {};
@@ -265,6 +271,13 @@ export function Wizard({ docType }: { docType: DocType }) {
         <div key={f.id}>
           <JournalField value={value} onPatch={patchInput} accessCode={settings.accessCode} />
           {["j_title", "j_year", "j_text"].map((k) => errors[k] && <p key={k} className="mt-2 text-sm text-red-600">{errors[k]}</p>)}
+        </div>
+      );
+    }
+    if (f.type === "serial") {
+      return (
+        <div key={f.id} className="sm:col-span-2">
+          <SerialField label={f.label} help={f.help} value={value(f.id)} onChange={(v) => patchInput({ [f.id]: v })} />
         </div>
       );
     }

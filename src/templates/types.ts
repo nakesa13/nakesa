@@ -1,6 +1,6 @@
 import type { DocType } from "@/lib/types";
 
-export type FieldType = "text" | "textarea" | "select" | "journal";
+export type FieldType = "text" | "textarea" | "select" | "journal" | "serial";
 
 export interface FieldDef {
   id: string;

@@ -91,6 +91,27 @@ describe("T08: LP dari topik saja, sumber kosong = [perlu referensi]", () => {
   });
 });
 
+describe("T09: LK ANC lewat /api/generate", () => {
+  const input = { jenis_asuhan: "Kehamilan (ANC)", kasus: "Anemia ringan", inisial: "Ny. S" };
+
+  it("nilai ANC yang dikarang AI saat kolom kosong diberi peringatan oleh server", async () => {
+    vi.mocked(generateSection).mockResolvedValueOnce({ text: "DJJ 148 x/menit dan TFU 30 cm. HPHT 3 Maret 2026.", stripped: [] });
+    const res = await call({ docType: "LK", sectionId: "interpretasi", input, sources: [] });
+    expect(res.status).toBe(200);
+    const { warnings } = (await res.json()) as { warnings: { unsupportedNumbers: string[] } };
+    expect(warnings.unsupportedNumbers).toEqual(expect.arrayContaining(["148 x/menit", "30 cm", "3 Maret 2026"]));
+  });
+
+  it("bagian data (subjektif/objektif) disusun kode: kolom kosong [belum diisi], AI tidak dipanggil", async () => {
+    const res = await call({ docType: "LK", sectionId: "objektif", input, sources: [] });
+    expect(res.status).toBe(200);
+    const { text } = (await res.json()) as { text: string };
+    expect(text).toContain("| Denyut jantung janin (DJJ) | [belum diisi] |");
+    expect(text).toContain("**Pengukuran Serial**\n\n[belum diisi]");
+    expect(vi.mocked(generateSection)).not.toHaveBeenCalled();
+  });
+});
+
 describe("T07: data pasien tidak sampai ke Reading Journal", () => {
   const dirty = { topik: "ASI eksklusif", inisial: "Ny. S", umur: "27 tahun", td: "110/70 mmHg", implementasi: "Tablet Fe", keluhan_utama: "Lemas dan pusing" };
 

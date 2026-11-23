@@ -319,6 +319,8 @@ export function visibleStepIds(docType: DocType, outline: OutlineItem[] | null):
   const ids = new Set<string>(["kasus", "identitas"]);
   if (needAll || refs.has("subjektif") || refs.has("pengkajian")) ids.add("subjektif");
   if (needAll || refs.has("objektif") || refs.has("pengkajian")) ids.add("objektif");
+  // T09: data ANC terstruktur (tampil hanya bila jenis asuhan ANC; disaring di formulir).
+  if (needAll || refs.has("subjektif") || refs.has("objektif") || refs.has("pengkajian")) ids.add("anc");
   if (needAll || refs.has("implementasi") || refs.has("evaluasi")) ids.add("tindakan");
   return ids;
 }

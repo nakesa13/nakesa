@@ -98,6 +98,32 @@ export const LK: TemplateDef = {
       ],
     },
     {
+      id: "anc",
+      title: "Data Kehamilan (ANC)",
+      description:
+        "Khusus asuhan kehamilan. Isi hanya yang benar-benar Anda peroleh; kolom kosong tertulis [belum diisi], tidak diisi atau dihitung oleh AI. Pengukuran berulang dicatat per waktu dan tidak saling menimpa.",
+      fields: [
+        { id: "anc_hpht", label: "HPHT", type: "text", half: true, placeholder: "mis. 3 Maret 2026" },
+        { id: "anc_tp", label: "Taksiran persalinan (TP)", type: "text", half: true, placeholder: "Tulis sesuai hasil perhitungan Anda", help: "Aplikasi tidak menghitung TP untuk Anda." },
+        { id: "anc_gravida", label: "Gravida", type: "text", half: true, placeholder: "mis. 2" },
+        { id: "anc_para", label: "Para", type: "text", half: true, placeholder: "mis. 1" },
+        { id: "anc_abortus", label: "Abortus", type: "text", half: true, placeholder: "mis. 0" },
+        { id: "anc_uk", label: "Usia kehamilan", type: "text", half: true, placeholder: "mis. 28 minggu" },
+        { id: "anc_kunjungan", label: "Kunjungan ANC ke", type: "text", half: true, placeholder: "mis. 4" },
+        { id: "anc_tt", label: "Status imunisasi TT", type: "text", half: true, placeholder: "mis. TT2" },
+        { id: "anc_fe", label: "Tablet tambah darah (Fe)", type: "text", half: true, placeholder: "mis. 30 tablet diberikan hari ini" },
+        { id: "anc_tfu", label: "Tinggi fundus uteri (TFU)", type: "text", half: true, placeholder: "mis. 28 cm" },
+        { id: "anc_djj", label: "Denyut jantung janin (DJJ)", type: "text", half: true, placeholder: "mis. 140 x/menit" },
+        { id: "anc_letak", label: "Letak / presentasi janin", type: "text", half: true, placeholder: "mis. kepala" },
+        {
+          id: "ukur_serial",
+          label: "Pengukuran serial",
+          type: "serial",
+          help: "Pengukuran yang diulang (mis. tekanan darah tiap kunjungan). Tiap pengukuran punya waktu sendiri dan tidak menimpa yang lain.",
+        },
+      ],
+    },
+    {
       id: "tindakan",
       title: "Implementasi dan Evaluasi",
       description: "Bagian ini adalah fakta tindakan, jadi harus dari Anda, bukan dari AI.",
