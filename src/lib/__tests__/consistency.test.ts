@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { TEMPLATES } from "../../templates";
 import type { DocType, Source } from "../types";
 import { checkConsistency, hasToken, keywords, type DocSnap } from "../consistency";
-import { buildInput, isSharedField, searchKeywords, sharedInput, suggestedInput } from "../kasus";
+import { buildInput, isSharedField, searchKeywords, sharedInput, suggestedInput, PATIENT_FIELD_IDS, type SharedCase } from "../kasus";
+import { resolveSection } from "../outline";
 
 const snap = (type: DocType, p: Partial<DocSnap> = {}): DocSnap => ({ type, started: true, input: {}, sections: TEMPLATES[type].sections, texts: {}, sources: [], ...p });
 const src = (p: Partial<Source> = {}): Source => ({ id: "S1", type: "jurnal", title: "Efek tablet besi pada anemia", authors: [{ family: "Rahma", given: "Sari" }], year: "2022", journal: "Jurnal Uji", doi: "10.1234/abcd", origin: "manual", verified: false, ...p });
@@ -118,5 +119,73 @@ describe("pemeriksaan konsistensi", () => {
   it("kasus bersama kosong diingatkan", () => {
     expect(ids(checkConsistency([snap("LP")], {}))).toContain("kasus-kosong");
     expect(ids(checkConsistency([snap("RJ")], {}))).not.toContain("kasus-kosong");
+  });
+
+  it("dokumen mandiri yang punya kasus sendiri tidak diingatkan 'kasus belum diisi'", () => {
+    expect(ids(checkConsistency([snap("LP", { input: { kasus: "Anemia" } })], {}))).not.toContain("kasus-kosong");
+  });
+
+  it("bagian isi-sendiri yang kosong ditandai; terisi tidak", () => {
+    const sections = [resolveSection("LK", { id: "o1", title: "Catatan Perkembangan", level: 2, role: "manual" })];
+    expect(ids(checkConsistency([snap("LK", { sections })], { kasus: "Anemia" }))).toContain("manual-kosong-LK");
+    expect(ids(checkConsistency([snap("LK", { sections, texts: { o1: "Catatan saya." } })], { kasus: "Anemia" }))).not.toContain("manual-kosong-LK");
+  });
+});
+
+describe("T03: data ANC tidak bocor ke LP/Jurnal", () => {
+  const serial = JSON.stringify([{ id: "m1", at: "2026-11-24T08:30", kind: "td", value: "150/100 mmHg" }]);
+  const lk = snap("LK", { input: { anc_hpht: "2026-03-12", anc_uk: "28 minggu", anc_tfu: "28 cm", anc_letak: "kepala", anc_tt: "TT3", ukur_serial: serial } });
+  const run = (t: DocType, text: string) => checkConsistency([lk, snap(t, { texts: { x: text } })], { kasus: "Anemia" }).find((f) => f.id === `data-pasien-${t}`);
+
+  it("HPHT dan usia kehamilan dari LK yang muncul di LP ditandai error", () => {
+    const f = run("LP", "Ibu dengan HPHT 2026-03-12 dan usia kehamilan 28 minggu mengalami anemia.");
+    expect(f?.severity).toBe("error");
+    expect(f?.detail).toContain("2026-03-12");
+    expect(f?.detail).toContain("28 minggu");
+  });
+
+  it("hasil pengukuran serial dari LK yang muncul di LP ditandai", () => {
+    expect(run("LP", "Tekanan darah 150/100 mmHg pada kunjungan itu.")?.detail).toContain("150/100 mmhg");
+  });
+
+  it("di Reading Journal tandanya peringatan (warn), bukan error", () => {
+    expect(run("RJ", "Subjek penelitian memiliki HPHT 2026-03-12.")?.severity).toBe("warn");
+  });
+
+  it("kata umum (letak kepala, TT3) dan teori tanpa nilai pasien tidak ditandai", () => {
+    expect(run("LP", "Letak kepala janin lazim pada trimester akhir. Imunisasi TT3 dianjurkan pada kehamilan.")).toBeUndefined();
+  });
+});
+
+describe("T03: pemeriksa konsistensi bukan pemeriksa klinis", () => {
+  const run = (td: string, djj: string) => checkConsistency([snap("LK", { input: { td, anc_djj: djj, anc_uk: "28 minggu", kasus: "Anemia" } })], { kasus: "Anemia" }).map((f) => `${f.id}|${f.severity}|${f.title}|${f.detail}`);
+
+  it("nilai klinis yang ekstrem tidak mengubah temuan sama sekali dan tidak ada kata penilaian klinis", () => {
+    const abnormal = run("220/140 mmHg", "60");
+    expect(abnormal).toEqual(run("110/70 mmHg", "140"));
+    expect(abnormal.join(" ")).not.toMatch(/normal|diagnosis (benar|salah)|berbahaya|aman|gawat|hipertensi|preeklamsia|anemia berat/i);
+  });
+});
+
+describe("T03: data pasien tidak otomatis ke LP/Reading Journal", () => {
+  const dirty = { kasus: "Anemia", jenis_asuhan: "Kehamilan (ANC)", linked: { LP: true, RJ: true }, inisial: "Ny. S", td: "110/70 mmHg", anc_hpht: "2026-03-12" } as unknown as SharedCase;
+
+  it("kasus bersama hanya membawa jenis asuhan dan kasus, juga bila penyimpanan lokal disisipi kolom pasien", () => {
+    expect(sharedInput("LP", dirty)).toEqual({ jenis_asuhan: "Kehamilan (ANC)", kasus: "Anemia" });
+    const lp = buildInput("LP", {}, {}, dirty);
+    for (const k of ["inisial", "td", "anc_hpht"]) expect(lp[k]).toBeUndefined();
+    const rj = buildInput("RJ", {}, {}, dirty);
+    for (const id of PATIENT_FIELD_IDS) expect(rj[id], id).toBeUndefined();
+  });
+
+  it("Reading Journal membuang kolom pasien dari draf, termasuk kolom ANC dan pengukuran serial", () => {
+    const rj = buildInput("RJ", { topik: "Anemia", td: "110/70", anc_hpht: "2026-03-12", ukur_serial: "[]", inisial: "Ny. S" }, {}, {});
+    expect(rj.topik).toBe("Anemia");
+    for (const k of ["td", "anc_hpht", "ukur_serial", "inisial"]) expect(rj[k]).toBeUndefined();
+  });
+
+  it("dokumen yang tidak dihubungkan tidak menerima kasus bersama sama sekali", () => {
+    expect(sharedInput("LP", { kasus: "Anemia", jenis_asuhan: "Kehamilan (ANC)" })).toEqual({});
+    expect(buildInput("LP", {}, {}, { kasus: "Anemia", jenis_asuhan: "Kehamilan (ANC)" }).kasus).toBeUndefined();
   });
 });

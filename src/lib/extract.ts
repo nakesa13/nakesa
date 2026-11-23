@@ -30,6 +30,7 @@ const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
 
 const tidy = (s: string): string =>
   s
+    .replace(/\r\n?/g, "\n")
     .replace(CONTROL, "")
     .replace(/[ \t]+/g, " ")
     .replace(/ ?\n ?/g, "\n")
@@ -59,8 +60,12 @@ export function docxToText(bytes: Uint8Array): string {
   if (!f) throw new ExtractError("File bukan dokumen Word (.docx) yang valid.");
   const xml = f.asText();
   if (xml.length > 30_000_000) throw new ExtractError("Dokumen Word terlalu besar untuk dibaca.", 413);
+  // Teks revisi yang dihapus (w:del) dan yang dipindah keluar (w:moveFrom; salinannya ada di w:moveTo) tidak dibaca.
+  // Hanya elemen berpasangan: penanda self-closing <w:del .../> (tanda paragraf dihapus) tidak boleh memulai pencocokan,
+  // kalau tidak teks sah sampai </w:del> berikutnya ikut terhapus.
   const body = xml
-    .replace(/<w:del\b[\s\S]*?<\/w:del>/g, "")
+    .replace(/<w:del\b[^>]*(?<!\/)>[\s\S]*?<\/w:del>/g, "")
+    .replace(/<w:moveFrom\b[^>]*(?<!\/)>[\s\S]*?<\/w:moveFrom>/g, "")
     .replace(/<w:instrText[^>]*>[\s\S]*?<\/w:instrText>/g, "")
     .replace(/<w:tab\s*\/>/g, "\t")
     .replace(/<w:(?:br|cr)\b[^>]*\/>/g, "\n")

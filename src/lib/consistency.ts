@@ -1,6 +1,7 @@
 import type { DocType, Input, Source } from "./types";
 import type { SectionDef } from "@/templates/types";
 import { extractMarkerIds } from "./citations";
+import { SERIAL_KEY, parseSerial } from "./anc";
 import type { SharedCase } from "./kasus";
 
 /**
@@ -77,6 +78,19 @@ const IDENTITY: [string, string][] = [
 /** Data pasien LK yang tidak boleh muncul di LP/Jurnal. */
 const PATIENT_FIELDS = ["inisial", "umur", "td", "nadi", "rr", "suhu", "bb", "tb"];
 
+/**
+ * T03: kolom ANC terstruktur yang nilainya khas satu pasien (tanggal, usia kehamilan, ukuran). Kolom berisi kata umum
+ * (mis. letak "kepala", status "TT3") sengaja tidak dipakai: akan sering salah menandai teori yang sah.
+ */
+const ANC_LEAK_FIELDS = ["anc_hpht", "anc_tp", "anc_uk", "anc_tfu", "anc_djj"];
+
+/** Nilai pasien dari LK yang dicari di LP/Jurnal: kolom tetap, kolom ANC khas, dan hasil pengukuran serial (berangka, >= 5 karakter). */
+function patientTokens(input: Input): string[] {
+  const serial = parseSerial(input[SERIAL_KEY]).items.map((i) => i.value).filter((v) => v.trim().length >= 5 && /\d/.test(v));
+  const raw = [...PATIENT_FIELDS, ...ANC_LEAK_FIELDS].map((k) => input[k] ?? "").concat(serial);
+  return [...new Set(raw.map(norm).filter((t) => t.length >= 3))];
+}
+
 const refsOf = (d: DocSnap): Set<string> => new Set(d.sections.filter((s) => s.kind !== "heading").map((s) => s.ref ?? s.id));
 const joinTexts = (d: DocSnap): string => Object.values(d.texts).join("\n");
 
@@ -118,7 +132,7 @@ export function checkConsistency(docs: DocSnap[], c: SharedCase): Finding[] {
 
   // 4) data pasien LK bocor ke LP / Reading Journal
   if (lk) {
-    const toks = [...new Set(PATIENT_FIELDS.map((k) => norm(lk.input[k] ?? "")).filter((t) => t.length >= 3))];
+    const toks = patientTokens(lk.input);
     for (const d of active.filter((x) => x.type !== "LK")) {
       const body = norm(joinTexts(d));
       const hits = toks.filter((t) => hasToken(body, t));
