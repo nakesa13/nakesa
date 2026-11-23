@@ -7,20 +7,23 @@ import { JENIS_ASUHAN } from "@/templates/common";
 import { journalSourceFromInput } from "@/lib/case";
 import { DRAFT_PREFIX, SETTINGS_DEFAULT, SETTINGS_KEY, type Settings } from "@/lib/client";
 import { EMPTY_DRAFT, sectionsOf, type Draft } from "@/lib/draft";
-import { CASE_KEY, EMPTY_CASE, buildInput, searchKeywords, type SharedCase } from "@/lib/kasus";
+import { CASE_KEY, EMPTY_CASE, buildInput, isLinked, searchKeywords, type SharedCase } from "@/lib/kasus";
 import { checkConsistency, type DocSnap, type Severity } from "@/lib/consistency";
+import { reviewClinical, type ClinicalLevel } from "@/lib/clinical/review";
 import { clearLocal, useHydrated, useLocalState } from "@/lib/useLocalState";
 
 const DOCS: { type: DocType; href: string; hint: string }[] = [
-  { type: "LK", href: "/lk", hint: "Isi data pasien di sini. Jenis asuhan dan kasus mengikuti kasus bersama." },
-  { type: "LP", href: "/lp", hint: "Teori untuk kasus yang sama. Tidak memuat data pasien." },
-  { type: "RJ", href: "/rj", hint: "Telaah jurnal yang relevan dengan kasus. Topik terisi dari kasus." },
+  { type: "LK", href: "/lk", hint: "Isi data pasien di sini. Bisa dimulai sendiri; jenis asuhan dan kasus mengikuti kasus bersama hanya bila dihubungkan." },
+  { type: "LP", href: "/lp", hint: "Teori untuk satu kasus. Bisa dimulai sendiri. Tidak memuat data pasien." },
+  { type: "RJ", href: "/rj", hint: "Telaah satu jurnal. Bisa dimulai sendiri; topik terisi dari kasus hanya bila dihubungkan." },
 ];
 
 const SEV_LABEL: Record<Severity, string> = { error: "Perlu diperbaiki", warn: "Perlu dicek", info: "Saran" };
 const SEV_BADGE: Record<Severity, string> = { error: "badge badge-bad", warn: "badge badge-warn", info: "badge badge-mute" };
 const HREF: Record<DocType, string> = { LP: "/lp", LK: "/lk", RJ: "/rj" };
 const SHORT: Record<DocType, string> = { LP: "LP", LK: "LK", RJ: "Jurnal" };
+const CL_LABEL: Record<ClinicalLevel, string> = { periksa: "Perlu dicek", "belum-bisa": "Belum bisa dicek", sesuai: "Sesuai data" };
+const CL_BADGE: Record<ClinicalLevel, string> = { periksa: "badge badge-warn", "belum-bisa": "badge badge-mute", sesuai: "badge badge-ok" };
 
 function snapshot(type: DocType, draft: Draft, settings: Settings, c: SharedCase): DocSnap {
   const input = buildInput(type, draft.input, settings, c);
@@ -43,6 +46,8 @@ export function KasusPage() {
     [lk, lp, rj, settings, c]
   );
   const findings = useMemo(() => checkConsistency(snaps, c), [snaps, c]);
+  const lkSnap = snaps.find((s) => s.type === "LK")!;
+  const clinical = useMemo(() => reviewClinical(lkSnap.input, lkSnap.texts), [lkSnap]);
 
   if (!hydrated) return <div className="card h-64 animate-pulse" />;
 
@@ -61,7 +66,7 @@ export function KasusPage() {
       <div>
         <h1 className="text-2xl font-semibold">Kasus &amp; Konsistensi</h1>
         <p className="mt-1 text-sm text-muted">
-          Satu kasus dipakai bersama oleh LK, LP, dan Reading Journal, sehingga Anda tidak mengisi ulang dan ketiga dokumen membahas topik yang sama.
+          LK, LP, dan Reading Journal bisa dikerjakan sendiri-sendiri. Bila mau, hubungkan satu dokumen ke kasus bersama dari halaman dokumen itu (dengan konfirmasi) agar tidak mengisi ulang dan topiknya sama.
         </p>
       </div>
 
@@ -88,7 +93,7 @@ export function KasusPage() {
             <input id="k_kasus" className="field" value={c.kasus ?? ""} onChange={(e) => setC((x) => ({ ...x, kasus: e.target.value }))} placeholder="mis. Anemia ringan dalam kehamilan" />
           </div>
         </div>
-        <p className="help mt-3">Perubahan di sini langsung berlaku di LP dan LK. Data pasien (inisial, TTV, tindakan) tetap hanya ada di LK.</p>
+        <p className="help mt-3">Perubahan di sini berlaku di dokumen yang Anda hubungkan. Data pasien (inisial, TTV, tindakan) tetap hanya ada di LK dan tidak pernah dibawa ke dokumen lain.</p>
         <div className="mt-3">
           <button className="btn btn-sm" onClick={newCase}>
             Mulai kasus baru
@@ -107,7 +112,8 @@ export function KasusPage() {
               <h3 className="font-semibold">{TEMPLATES[d.type].name}</h3>
               <p className="mt-1 text-xs text-muted">{d.hint}</p>
               <div className="mt-3 space-y-1 text-sm">
-                {s.started ? <span className="badge badge-ok">Draf ada</span> : <span className="badge badge-mute">Belum dimulai</span>}
+                {s.started ? <span className="badge badge-ok">Draf ada</span> : <span className="badge badge-mute">Belum dimulai</span>}{" "}
+                {isLinked(d.type, c) ? <span className="badge badge-ok">Terhubung ke kasus</span> : <span className="badge badge-mute">Mandiri</span>}
                 {s.started && (
                   <p className="text-xs text-muted">
                     {done}/{ai.length} bagian AI terisi{title ? ` · ${title.slice(0, 50)}` : ""}
@@ -162,6 +168,51 @@ export function KasusPage() {
           </ul>
         )}
         <p className="help mt-3">Pemeriksaan ini berbasis aturan, bukan penilaian dosen. Ia membantu menemukan ketidaksesuaian; keputusan akhir tetap di Anda.</p>
+      </section>
+
+      <section className="card p-5">
+        <h2 className="text-lg font-semibold">Telaah klinis (penasihat)</h2>
+        <p className="mt-1 text-sm text-muted">
+          Mencocokkan diagnosis di LK dengan angka yang Anda isi, memakai acuan yang disebut di tiap temuan. Hasilnya bukan penilaian benar atau salah, dan tidak menggantikan pembimbing.
+        </p>
+        {!lkSnap.started ? (
+          <p className="mt-2 text-sm text-muted">Belum ada data LK yang diisi.</p>
+        ) : !clinical.applicable ? (
+          <p className="mt-2 text-sm text-muted">{clinical.reason}</p>
+        ) : (
+          <>
+            {clinical.findings.length === 0 ? (
+              <p className="mt-3 rounded-md bg-brand-soft p-3 text-sm">Tidak ada aturan yang berlaku untuk data saat ini. Itu bukan tanda bahwa semua data sudah benar; lihat daftar &quot;Belum dicek&quot; di bawah.</p>
+            ) : (
+              <ul className="mt-3 space-y-2">
+                {clinical.findings.map((f) => (
+                  <li key={f.id} className="rounded-md border border-line p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={CL_BADGE[f.level]}>{CL_LABEL[f.level]}</span>
+                      <p className="flex-1 text-sm font-medium">{f.title}</p>
+                      <Link href="/lk" className="text-xs text-brand underline">
+                        LK
+                      </Link>
+                    </div>
+                    <p className="mt-1 text-xs text-muted">{f.detail}</p>
+                    <details className="mt-1 text-xs text-muted">
+                      <summary className="cursor-pointer">Acuan</summary>
+                      <p className="mt-1">{f.basis}</p>
+                    </details>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="mt-3 space-y-1 text-xs text-muted">
+              <p>
+                <b>Dicek:</b> {clinical.checked.join("; ")}.
+              </p>
+              <p>
+                <b>Belum dicek:</b> {clinical.notChecked.join("; ")}. Hal-hal ini tetap perlu ditinjau pembimbing.
+              </p>
+            </div>
+          </>
+        )}
       </section>
     </div>
   );

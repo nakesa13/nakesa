@@ -9,23 +9,25 @@ const src = (p: Partial<Source> = {}): Source => ({ id: "S1", type: "jurnal", ti
 const ids = (f: { id: string }[]) => f.map((x) => x.id);
 
 describe("Kasus bersama", () => {
-  it("jenis asuhan dan kasus hanya untuk LP/LK; Jurnal tidak", () => {
-    expect(isSharedField("LP", "kasus")).toBe(true);
-    expect(isSharedField("LK", "jenis_asuhan")).toBe(true);
-    expect(isSharedField("RJ", "kasus")).toBe(false);
-    expect(isSharedField("LK", "judul")).toBe(false);
-    expect(sharedInput("RJ", { kasus: "x" })).toEqual({});
+  it("jenis asuhan dan kasus hanya untuk LP/LK yang terhubung; Jurnal tidak", () => {
+    const all = { linked: { LP: true, LK: true, RJ: true } };
+    expect(isSharedField("LP", "kasus", all)).toBe(true);
+    expect(isSharedField("LK", "jenis_asuhan", all)).toBe(true);
+    expect(isSharedField("RJ", "kasus", all)).toBe(false);
+    expect(isSharedField("LK", "judul", all)).toBe(false);
+    expect(isSharedField("LP", "kasus", {})).toBe(false);
+    expect(sharedInput("RJ", { kasus: "x", ...all })).toEqual({});
   });
 
   it("kasus bersama mengalahkan isian lama di draf; kolom lain tetap", () => {
-    const i = buildInput("LK", { kasus: "lama", td: "110/70 mmHg" }, {}, { kasus: "Anemia ringan", jenis_asuhan: "Kehamilan (ANC)" });
+    const i = buildInput("LK", { kasus: "lama", td: "110/70 mmHg" }, {}, { kasus: "Anemia ringan", jenis_asuhan: "Kehamilan (ANC)", linked: { LK: true } });
     expect(i.kasus).toBe("Anemia ringan");
     expect(i.jenis_asuhan).toBe("Kehamilan (ANC)");
     expect(i.td).toBe("110/70 mmHg");
   });
 
   it("usulan judul LP dan topik Jurnal dari kasus, tetapi isian draf menang", () => {
-    const c = { kasus: "Anemia", jenis_asuhan: "Kehamilan (ANC)" };
+    const c = { kasus: "Anemia", jenis_asuhan: "Kehamilan (ANC)", linked: { LP: true, LK: true, RJ: true } };
     expect(suggestedInput("LP", c).judul).toBe("Asuhan Kebidanan pada Ibu Hamil dengan Anemia");
     expect(suggestedInput("RJ", c).topik).toBe("Anemia");
     expect(suggestedInput("LK", c)).toEqual({});

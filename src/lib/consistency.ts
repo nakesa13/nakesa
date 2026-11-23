@@ -92,8 +92,10 @@ export function checkConsistency(docs: DocSnap[], c: SharedCase): Finding[] {
   const kws = keywords(kasus);
 
   // 1) kasus bersama
-  if (active.some((d) => d.type !== "RJ") && !kasus) {
-    push({ id: "kasus-kosong", severity: "warn", docs: active.filter((d) => d.type !== "RJ").map((d) => d.type), title: "Kasus bersama belum diisi", detail: "Isi diagnosis/kasus di halaman Kasus atau di langkah Kasus pada LP/LK agar semua dokumen membahas topik yang sama." });
+  // Dokumen mandiri boleh punya kasus sendiri (di isiannya); peringatan hanya untuk dokumen yang tidak punya kasus sama sekali.
+  const tanpaKasus = active.filter((d) => d.type !== "RJ" && !(d.input.kasus ?? "").trim());
+  if (tanpaKasus.length && !kasus) {
+    push({ id: "kasus-kosong", severity: "warn", docs: tanpaKasus.map((d) => d.type), title: "Kasus belum diisi", detail: "Isi diagnosis/kasus di langkah Kasus pada LP/LK (atau di halaman Kasus bila dokumen dihubungkan ke kasus bersama) agar dokumen membahas topik yang jelas." });
   }
 
   // 2) identitas

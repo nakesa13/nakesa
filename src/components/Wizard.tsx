@@ -15,7 +15,7 @@ import { loadTemplate, saveTemplate, type StoredTemplate } from "@/lib/templateS
 import { OutlineStep } from "./OutlineStep";
 import { dropDynamicTexts, resolveSection, visibleStepIds, type OutlineItem } from "@/lib/outline";
 import { EMPTY_DRAFT, type Draft } from "@/lib/draft";
-import { CASE_KEY, EMPTY_CASE, buildInput, isSharedField, searchKeywords, type SharedCase } from "@/lib/kasus";
+import { CASE_KEY, EMPTY_CASE, buildInput, caseDerivedInput, isLinked, isSharedField, linkConfirmMessage, linkDoc, reusePreview, searchKeywords, unlinkDoc, type SharedCase } from "@/lib/kasus";
 
 const EMPTY_LIB: Source[] = [];
 
@@ -77,7 +77,7 @@ export function Wizard({ docType }: { docType: DocType }) {
     const mine: Record<string, string> = {};
     const shared: SharedCase = {};
     for (const [k, v] of Object.entries(p)) {
-      if (isSharedField(docType, k)) (shared as Record<string, string>)[k] = v;
+      if (isSharedField(docType, k, sharedCase)) (shared as Record<string, string>)[k] = v;
       else mine[k] = v;
     }
     if (Object.keys(mine).length) setDraft((d) => ({ ...d, input: { ...d.input, ...mine } }));
@@ -239,6 +239,20 @@ export function Wizard({ docType }: { docType: DocType }) {
     }
   };
 
+  // T07: kasus bersama hanya dipakai bila pengguna memilihnya (opt-in) dan setelah konfirmasi. Tanpa itu dokumen berdiri sendiri.
+  const linked = isLinked(docType, sharedCase);
+  const hasSharedCase = !!(sharedCase.kasus || sharedCase.jenis_asuhan);
+  const linkToCase = () => {
+    if (!window.confirm(linkConfirmMessage(docType, reusePreview(docType, draft.input, sharedCase)))) return;
+    setSharedCase((c) => linkDoc(docType, c));
+  };
+  const unlinkFromCase = () => {
+    // Nilai yang sedang dipakai disalin ke draf, jadi dokumen ini tidak kehilangan isiannya.
+    const keep = caseDerivedInput(docType, draft.input, sharedCase);
+    setDraft((d) => ({ ...d, input: keep }));
+    setSharedCase((c) => unlinkDoc(docType, c));
+  };
+
   if (!hydrated) return <div className="card h-64 animate-pulse" />;
 
   const renderField = (f: FieldDef) => {
@@ -289,16 +303,28 @@ export function Wizard({ docType }: { docType: DocType }) {
         <p className="mt-1 text-sm text-muted">{tpl.description}</p>
       </div>
 
-      {sharedCase.kasus || sharedCase.jenis_asuhan ? (
+      {hasSharedCase || linked ? (
         <div className="rounded-md border border-line bg-card p-3 text-sm">
-          <p>
-            <b>Kasus bersama:</b> {[sharedCase.jenis_asuhan, sharedCase.kasus].filter(Boolean).join(" · ")}
-            {docType === "RJ" ? " — topik jurnal terisi dari kasus ini (boleh diubah)." : " — dipakai juga oleh dokumen lain."}{" "}
-            <Link href="/kasus" className="text-brand underline">
-              Kelola
-            </Link>
-          </p>
-          {docType === "RJ" && searchKeywords(sharedCase) && <p className="mt-1 text-xs text-muted">Kata kunci untuk mencari jurnal: {searchKeywords(sharedCase)}</p>}
+          {linked ? (
+            <p>
+              <b>Terhubung ke kasus bersama:</b> {[sharedCase.jenis_asuhan, sharedCase.kasus].filter(Boolean).join(" · ") || "(belum diisi)"}
+              {docType === "RJ" ? " — topik jurnal terisi dari kasus ini (boleh diubah)." : " — jenis asuhan dan kasus mengikuti kasus bersama."}{" "}
+              <Link href="/kasus" className="text-brand underline">
+                Kelola
+              </Link>{" · "}
+              <button type="button" className="text-brand underline" onClick={unlinkFromCase}>
+                Lepas tautan
+              </button>
+            </p>
+          ) : (
+            <p>
+              Dokumen ini berdiri sendiri. Ada kasus bersama ({[sharedCase.jenis_asuhan, sharedCase.kasus].filter(Boolean).join(" · ")}) yang bisa Anda pakai di sini bila mau.{" "}
+              <button type="button" className="text-brand underline" onClick={linkToCase}>
+                Pakai kasus bersama…
+              </button>
+            </p>
+          )}
+          {docType === "RJ" && linked && searchKeywords(sharedCase) && <p className="mt-1 text-xs text-muted">Kata kunci untuk mencari jurnal: {searchKeywords(sharedCase)}</p>}
         </div>
       ) : null}
 

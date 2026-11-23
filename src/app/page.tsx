@@ -60,7 +60,7 @@ export default function Home() {
             Isi identitas sekali di <Link className="text-brand underline" href="/pengaturan">Pengaturan</Link> dan pilih gaya rujukan (APA/Vancouver).
           </li>
           <li>
-            Tentukan kasus sekali di <Link className="text-brand underline" href="/kasus">Kasus &amp; Konsistensi</Link>. LK, LP, dan Reading Journal memakai kasus yang sama, dan ketidaksesuaian antar dokumen diperiksa otomatis.
+            Mulai dari dokumen mana pun; LK, LP, dan Reading Journal tidak saling bergantung. Bila ingin berbagi kasus, hubungkan dokumen ke kasus bersama di <Link className="text-brand underline" href="/kasus">Kasus &amp; Konsistensi</Link> (opsional, dengan konfirmasi).
           </li>
           <li>Pilih dokumen, isi langkah demi langkah, tambahkan referensi berisi (lewat DOI, atau unggah file PDF/Word/TXT).</li>
           <li>Di halaman Hasil, klik &quot;Tulis semua bagian&quot;, tinjau, perbaiki bagian bertanda kuning, lalu unduh .docx.</li>

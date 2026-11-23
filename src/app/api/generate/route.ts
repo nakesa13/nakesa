@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { AiConfigError, ProviderError, generateSection } from "@/lib/ai";
 import { analyzeSection, renderDataSection } from "@/lib/case";
 import { guard, isInput, parseSources } from "@/lib/guard";
+import { withoutPatientFields } from "@/lib/kasus";
 import { parseOutlineItem, resolveSection } from "@/lib/outline";
 import { getTemplate } from "@/templates";
 import type { SectionDef } from "@/templates/types";
@@ -30,7 +31,8 @@ export async function POST(req: Request) {
   if (!tpl || !section || !isInput(body.input) || !sources) {
     return Response.json({ error: "Data permintaan tidak valid." }, { status: 400 });
   }
-  const input = body.input;
+  // T07: Reading Journal tidak pernah menerima kolom data pasien, juga bila klien mengirimnya.
+  const input = tpl.type === "RJ" ? withoutPatientFields(body.input) : body.input;
 
   try {
     let text = "";
