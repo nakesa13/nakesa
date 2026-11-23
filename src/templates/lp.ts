@@ -17,11 +17,10 @@ export const LP: TemplateDef = {
       fields: [
         {
           id: "judul",
-          label: "Judul LP",
+          label: "Judul LP (opsional)",
           type: "text",
-          required: true,
           placeholder: "mis. Asuhan Kebidanan pada Ibu Hamil dengan Anemia",
-          help: "Judul yang akan tampil di sampul.",
+          help: "Judul yang akan tampil di sampul. Bila dikosongkan, dibuat otomatis dari jenis asuhan dan kasus.",
         },
         {
           id: "jenis_asuhan",

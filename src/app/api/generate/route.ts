@@ -3,6 +3,7 @@ import { AiConfigError, ProviderError, generateSection } from "@/lib/ai";
 import { analyzeSection, renderDataSection } from "@/lib/case";
 import { guard, isInput, parseSources } from "@/lib/guard";
 import { withoutPatientFields } from "@/lib/kasus";
+import { markNeedsReference, needsReferenceMark } from "@/lib/lp";
 import { parseOutlineItem, resolveSection } from "@/lib/outline";
 import { getTemplate } from "@/templates";
 import type { SectionDef } from "@/templates/types";
@@ -45,7 +46,7 @@ export async function POST(req: Request) {
         return Response.json({ error: "Teks jurnal belum ada. Unggah PDF jurnal atau tempel teksnya di langkah 'Jurnal'." }, { status: 400 });
       }
       const r = await generateSection(tpl.type, section.id, input, sources, section);
-      text = r.text;
+      text = needsReferenceMark(tpl.type, section, sources) ? markNeedsReference(r.text) : r.text;
       stripped = r.stripped;
     }
 

@@ -15,7 +15,8 @@ import { loadTemplate, saveTemplate, type StoredTemplate } from "@/lib/templateS
 import { OutlineStep } from "./OutlineStep";
 import { dropDynamicTexts, resolveSection, visibleStepIds, type OutlineItem } from "@/lib/outline";
 import { EMPTY_DRAFT, type Draft } from "@/lib/draft";
-import { CASE_KEY, EMPTY_CASE, buildInput, caseDerivedInput, isLinked, isSharedField, linkConfirmMessage, linkDoc, reusePreview, searchKeywords, unlinkDoc, type SharedCase } from "@/lib/kasus";
+import { CASE_KEY, EMPTY_CASE, buildInput, caseDerivedInput, isLinked, isSharedField, linkConfirmMessage, linkDoc, lpTitleFor, reusePreview, searchKeywords, unlinkDoc, type SharedCase } from "@/lib/kasus";
+import { countNeedsReference, pendingAiSections } from "@/lib/lp";
 
 const EMPTY_LIB: Source[] = [];
 
@@ -112,6 +113,9 @@ export function Wizard({ docType }: { docType: DocType }) {
   }, [sections, docType, draft.texts, effectiveInput, sources]);
 
   const warnCount = Object.values(warnings).filter((w) => w.unknownMarkers.length || (hasUsableSource && w.uncitedParagraphs) || w.unsupportedNumbers.length).length;
+  const needRefCount = aiSections.filter((s) => countNeedsReference(draft.texts[s.id] ?? "") > 0).length;
+  // Resume: hanya bagian yang belum ada teksnya. Bagian yang sudah ditulis/diedit tidak pernah ditimpa oleh "Tulis semua".
+  const pending = pendingAiSections(sections, draft.texts);
   const doneCount = aiSections.filter((s) => (draft.texts[s.id] ?? "").trim()).length;
 
   // ---- validasi langkah ----
@@ -154,7 +158,7 @@ export function Wizard({ docType }: { docType: DocType }) {
   const genAll = async () => {
     stopRef.current = false;
     setRunning(true);
-    const queue = aiSections.filter((s) => !(draft.texts[s.id] ?? "").trim());
+    const queue = [...pending];
     const worker = async () => {
       while (!stopRef.current) {
         const def = queue.shift();
@@ -173,7 +177,7 @@ export function Wizard({ docType }: { docType: DocType }) {
     if ((empty.length || emptyManual.length) && !window.confirm(`${empty.length} bagian AI dan ${emptyManual.length} bagian isi-sendiri masih kosong dan akan tampil tanpa isi (bagian isi-sendiri ditulis "${KOSONG}"). Tetap unduh?`)) return;
     setDl({ busy: true, error: "" });
     try {
-      const judul = (effectiveInput.judul ?? "").trim() || (docType === "RJ" ? effectiveInput.j_title ?? "" : "") || tpl.name;
+      const judul = (effectiveInput.judul ?? "").trim() || (docType === "RJ" ? effectiveInput.j_title ?? "" : "") || (docType === "LP" ? lpTitleFor(effectiveInput.jenis_asuhan ?? "", effectiveInput.kasus ?? "") : "") || tpl.name;
       const blob = await apiDocx(
         {
           docType,
@@ -411,7 +415,8 @@ export function Wizard({ docType }: { docType: DocType }) {
                 <h2 className="text-lg font-semibold">Hasil</h2>
                 <p className="mt-1 text-sm text-muted">
                   {doneCount}/{aiSections.length} bagian AI terisi
-                  {warnCount > 0 && <> · <span className="font-medium text-amber-600">{warnCount} bagian perlu ditinjau</span></>} · gaya rujukan {settings.style} · format {tplRec ? `template ${tplRec.name}` : "bawaan NAKESA"}
+                  {warnCount > 0 && <> · <span className="font-medium text-amber-600">{warnCount} bagian perlu ditinjau</span></>}
+                  {needRefCount > 0 && <> · <span className="font-medium text-amber-600">{needRefCount} bagian perlu referensi</span></>} · gaya rujukan {settings.style} · format {tplRec ? `template ${tplRec.name}` : "bawaan NAKESA"}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -420,8 +425,8 @@ export function Wizard({ docType }: { docType: DocType }) {
                     Hentikan
                   </button>
                 ) : (
-                  <button className="btn btn-primary" onClick={genAll} disabled={aiSections.every((s) => (draft.texts[s.id] ?? "").trim())}>
-                    <Icon name="spark" className="h-4 w-4" /> Tulis semua bagian
+                  <button className="btn btn-primary" onClick={genAll} disabled={pending.length === 0}>
+                    <Icon name="spark" className="h-4 w-4" /> {doneCount > 0 && pending.length > 0 ? `Lanjutkan menulis (${pending.length} tersisa)` : "Tulis semua bagian"}
                   </button>
                 )}
                 <button className="btn" onClick={download} disabled={dl.busy}>
@@ -431,7 +436,7 @@ export function Wizard({ docType }: { docType: DocType }) {
             </div>
             {!hasUsableSource && docType !== "RJ" && (
               <p className="mt-3 rounded-md bg-[var(--warn-bg)] p-3 text-sm text-[var(--warn-ink)]">
-                Belum ada sumber berisi di langkah Referensi, jadi AI tidak mengutip apa pun dan seluruh bagian teori ditulis tanpa rujukan. Tambahkan buku/jurnal beserta isinya di langkah Referensi, lalu tulis ulang bagian yang diperlukan.
+                Belum ada sumber berisi di langkah Referensi, jadi AI tidak mengutip apa pun. {docType === "LP" ? "Paragraf teori ditulis umum dan ditandai [perlu referensi]; tanda itu tampil juga di file Word sampai Anda menambah sumber berisi lalu menulis ulang bagiannya." : "Seluruh bagian teori ditulis tanpa rujukan. Tambahkan buku/jurnal beserta isinya di langkah Referensi, lalu tulis ulang bagian yang diperlukan."}
               </p>
             )}
             {dl.error && <p className="mt-3 text-sm text-red-600">{dl.error}</p>}
@@ -492,6 +497,7 @@ export function Wizard({ docType }: { docType: DocType }) {
                   )}
                   {w?.unknownMarkers.length ? <span className="badge badge-bad">Rujukan {w.unknownMarkers.join(", ")} tidak ada di daftar sumber</span> : null}
                   {hasUsableSource && w?.uncitedParagraphs ? <span className="badge badge-warn">{w.uncitedParagraphs} paragraf belum ada rujukan</span> : null}
+                  {countNeedsReference(text) > 0 ? <span className="badge badge-warn">{countNeedsReference(text)} paragraf perlu referensi</span> : null}
                   {w?.unsupportedNumbers.length ? (
                     <span className="badge badge-bad">Angka tidak ditemukan di {docType === "RJ" ? "teks jurnal" : "isian Anda"}: {w.unsupportedNumbers.join(", ")}</span>
                   ) : null}

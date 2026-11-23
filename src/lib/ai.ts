@@ -105,6 +105,12 @@ export function buildPrompt(docType: DocType, section: SectionDef, input: Input,
     lines.push(`KASUS/TOPIK: <topik>${input.kasus ?? ""}</topik>`, `JENIS ASUHAN: ${input.jenis_asuhan ?? ""}`);
   }
   if (docType === "LK") lines.push(`DATA KASUS:\n<data_kasus>\n${caseBlock("LK", input)}\n</data_kasus>`);
+  // T08: tanpa sumber berisi, teori LP ditulis umum dan konservatif; kode menandainya "[perlu referensi]".
+  if (docType === "LP" && section.needsCitation && usable.length === 0) {
+    lines.push(
+      "STATUS SUMBER: tidak ada sumber berisi. Tulis konsep umum yang mapan secara ringkas dan konservatif. Jangan menyebut angka, dosis, ambang nilai, statistik, nama pedoman, nama penulis, atau tahun, dan jangan memakai penanda [S#]."
+    );
+  }
   lines.push(`SUMBER:\n${block}`);
   return { prompt: lines.join("\n\n"), usable };
 }

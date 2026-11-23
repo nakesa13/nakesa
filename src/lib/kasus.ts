@@ -83,6 +83,16 @@ const SUBJEK: Record<string, string> = {
   Ginekologi: "Pasien Ginekologi",
 };
 
+/** Judul LP dari jenis asuhan dan kasus. Kosong bila kasus belum ada. Dipakai sebagai usulan dan sebagai cadangan saat judul tidak diisi. */
+export function lpTitleFor(jenis: string, kasus: string): string {
+  const k = kasus.trim();
+  const j = jenis.trim();
+  if (!k) return "";
+  if (!j) return `Asuhan Kebidanan dengan ${k}`;
+  const subjek = SUBJEK[j] ?? j.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+  return `Asuhan Kebidanan pada ${subjek} dengan ${k}`;
+}
+
 /** Nilai awal bila draf belum mengisinya (boleh diubah mahasiswa). Hanya untuk dokumen yang terhubung. */
 export function suggestedInput(docType: DocType, c: SharedCase): Input {
   const out: Input = {};
@@ -90,10 +100,7 @@ export function suggestedInput(docType: DocType, c: SharedCase): Input {
   const kasus = (c.kasus ?? "").trim();
   const jenis = (c.jenis_asuhan ?? "").trim();
   if (docType === "RJ" && kasus) out.topik = kasus;
-  if (docType === "LP" && kasus && jenis) {
-    const subjek = SUBJEK[jenis] ?? jenis.replace(/\s*\([^)]*\)\s*/g, " ").trim();
-    out.judul = `Asuhan Kebidanan pada ${subjek} dengan ${kasus}`;
-  }
+  if (docType === "LP" && kasus && jenis) out.judul = lpTitleFor(jenis, kasus);
   return out;
 }
 

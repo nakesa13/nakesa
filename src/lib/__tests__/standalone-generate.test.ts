@@ -3,6 +3,7 @@ import { TEMPLATES } from "../../templates";
 import type { DocType, Input, Source } from "../types";
 import { buildPrompt, generateSection } from "../ai";
 import { PATIENT_FIELD_IDS } from "../kasus";
+import { PERLU_REFERENSI } from "../lp";
 import { POST } from "../../app/api/generate/route";
 
 // T07 (integrasi): jalur server /api/generate untuk tiap dokumen yang dimulai sendiri, tanpa AI sungguhan.
@@ -55,6 +56,38 @@ describe("T07: tiap generator berjalan sendiri lewat /api/generate", () => {
   it("Reading Journal tanpa teks jurnal ditolak, tidak diisi dari dokumen lain", async () => {
     const res = await call({ docType: "RJ", sectionId: firstAi("RJ"), input: { topik: "Anemia" }, sources: [] });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("T08: LP dari topik saja, sumber kosong = [perlu referensi]", () => {
+  const input = { kasus: "Anemia ringan", jenis_asuhan: "Kehamilan (ANC)" };
+
+  it("tanpa sumber: paragraf teori ditandai oleh kode dan tidak ada penanda [S#]", async () => {
+    const res = await call({ docType: "LP", sectionId: "pengertian", input, sources: [] });
+    expect(res.status).toBe(200);
+    const { text } = (await res.json()) as { text: string };
+    expect(text).toContain(PERLU_REFERENSI);
+    expect(text).not.toMatch(/\[S\d+\]/);
+  });
+
+  it("dengan sumber berisi: tidak ditandai dan boleh mengutip sumber itu", async () => {
+    const res = await call({ docType: "LP", sectionId: "pengertian", input, sources: [JOURNAL] });
+    const { text } = (await res.json()) as { text: string };
+    expect(text).not.toContain(PERLU_REFERENSI);
+    expect(text).toContain("[S1]");
+  });
+
+  it("menulis ulang satu subbab hanya memproses subbab itu (permintaan per bagian)", async () => {
+    await call({ docType: "LP", sectionId: "etiologi", input, sources: [] });
+    expect(vi.mocked(generateSection)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(generateSection).mock.calls[0][1]).toBe("etiologi");
+  });
+
+  it("LK dan Reading Journal tidak diberi tanda ini", async () => {
+    const lk = await call({ docType: "LK", sectionId: firstAi("LK"), input: { kasus: "Anemia" }, sources: [] });
+    expect(((await lk.json()) as { text: string }).text).not.toContain(PERLU_REFERENSI);
+    const rj = await call({ docType: "RJ", sectionId: firstAi("RJ"), input: {}, sources: [JOURNAL] });
+    expect(((await rj.json()) as { text: string }).text).not.toContain(PERLU_REFERENSI);
   });
 });
 
