@@ -1,5 +1,8 @@
 import { ExtractError, MAX_SOURCE_BYTES, extractSourceText } from "@/lib/extract";
 import { guard } from "@/lib/guard";
+import { sha256Hex } from "@/lib/hash";
+import { cleanFileName } from "@/lib/provenance";
+import type { Provenance } from "@/lib/types";
 
 /** Baca teks dari file jurnal/referensi (PDF, Word .docx, .txt). File tidak disimpan di server. */
 export async function POST(req: Request) {
@@ -19,7 +22,8 @@ export async function POST(req: Request) {
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const r = await extractSourceText(bytes, file.name);
-    return Response.json(r, { headers: { "Cache-Control": "no-store" } });
+    const provenance: Provenance = { method: "file", fileName: cleanFileName(file.name), fetchedAt: new Date().toISOString(), bytes: bytes.length, sha256: sha256Hex(bytes) };
+    return Response.json({ ...r, provenance }, { headers: { "Cache-Control": "no-store" } });
   } catch (e) {
     if (e instanceof ExtractError) return Response.json({ error: e.message }, { status: e.status });
     console.error(e);

@@ -21,14 +21,14 @@ export interface ExtractedSource {
   pages: number | null;
   truncated: boolean;
   chars: number;
-  kind: "pdf" | "docx" | "txt";
+  kind: "pdf" | "docx" | "txt" | "html";
 }
 
 // Karakter kontrol (kecuali tab/baris baru) merusak XML Word dan tampilan; dibuang.
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
 
-const tidy = (s: string): string =>
+export const tidy = (s: string): string =>
   s
     .replace(/\r\n?/g, "\n")
     .replace(CONTROL, "")
@@ -37,7 +37,7 @@ const tidy = (s: string): string =>
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-function decodeEntities(s: string): string {
+export function decodeEntities(s: string): string {
   return s
     .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff)))
     .replace(/&#(\d+);/g, (_m, d: string) => String.fromCodePoint(Math.min(Number(d), 0x10ffff)))
@@ -76,7 +76,9 @@ export function docxToText(bytes: Uint8Array): string {
 
 async function pdfToText(bytes: Uint8Array): Promise<{ text: string; pages: number }> {
   try {
-    const pdf = await getDocumentProxy(bytes);
+    // pdf.js memindahkan (detach) buffer yang diberikan padanya. Salinan menjaga byte asli milik pemanggil tetap utuh,
+    // karena provenance (ukuran + sha256) dihitung dari byte itu SETELAH ekstraksi.
+    const pdf = await getDocumentProxy(bytes.slice());
     const { totalPages, text } = await extractText(pdf, { mergePages: true });
     return { text, pages: totalPages };
   } catch (e) {

@@ -25,6 +25,11 @@ npm run build
 |---|---|
 | `guard.test.ts` | Kode akses, batas laju per IP, `isInput`, `parseSources` |
 | `crossref.test.ts` | Normalisasi DOI, `lookupDoi` dengan Crossref di-stub |
+| `netguard.test.ts` | T04: pagar SSRF murni (IPv4/IPv6 privat, metadata cloud, bentuk IP aneh, skema, kredensial, port) |
+| `urlimport.test.ts` | T04: `fetchPublicUrl`/`importUrlSource` dengan DNS dan transport tiruan (DNS rebinding, pengalihan, batas ukuran, timeout, tipe palsu, HTML patologis) |
+| `urlimport-transport.test.ts` | T04: transport `node:http` nyata ke server lokal (IP di-pin, header Host asli), loopback tidak pernah dihubungi, entitas HTML ekstrem |
+| `import-url-route.test.ts` | T04: route `/api/import-url` (input berbahaya, kode akses, batas 30/jam, pemetaan galat, galat tak terduga tidak bocor) |
+| `provenance.test.ts` | T04: `doiContentCheck` (DOI sah != isi cocok, batas 80%/50%), `parseProvenance` dari klien tak tepercaya, integritas ukuran+sha256 PDF |
 | `routes.test.ts` | Route `/api/doi`, `/api/extract-source` (termasuk PDF berteks, PDF tanpa teks, tipe palsu, ukuran), `/api/template/analyze`, `/api/docx` (JSON dan multipart dengan template) |
 | `docx.test.ts` | Builder .docx |
 | lainnya | Lihat `docs/audit/BASELINE.md` bagian 5 |
@@ -33,6 +38,8 @@ Catatan:
 - PDF di `routes.test.ts` dibuat oleh kode (`makePdf`), tanpa berkas biner.
 - Isi .docx di `routes.test.ts` diperiksa dengan `pizzip`, tidak butuh `pandoc`.
 - Pembatas laju memakai `Map` tingkat modul. Test memakai IP unik per permintaan agar tidak saling memengaruhi.
+- `pdf-fixture.ts` (T04) berisi `makePdf`/`wrapLines`; salinan `makePdf` di `routes.test.ts` dibiarkan agar berkas T01 tidak berubah.
+- pdf.js memindahkan (detach) buffer yang diberikan padanya. `extract.ts` memberinya salinan (`bytes.slice()`), jika tidak, provenance PDF (`bytes`, `sha256`) tercatat dari buffer kosong. Dikunci oleh `provenance.test.ts`.
 
 ## Temuan yang dikunci test tetapi belum diperbaiki
 

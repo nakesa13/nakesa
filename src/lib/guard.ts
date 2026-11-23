@@ -1,4 +1,5 @@
 import type { Input, Source } from "./types";
+import { parseProvenance } from "./provenance";
 
 /**
  * Pelindung sederhana selama belum ada login:
@@ -52,6 +53,7 @@ export function parseSources(v: unknown): Source[] | null {
           .slice(0, 40)
       : [];
     const str = (k: string, max = 300) => (typeof s[k] === "string" && s[k] ? (s[k] as string).slice(0, max) : undefined);
+    const provenance = parseProvenance(s.provenance);
     out.push({
       id: s.id,
       type: s.type as Source["type"],
@@ -69,6 +71,7 @@ export function parseSources(v: unknown): Source[] | null {
       content: str("content", 80_000),
       origin: s.origin === "crossref" ? "crossref" : "manual",
       verified: s.verified === true,
+      ...(provenance ? { provenance } : {}),
     });
   }
   return out;

@@ -9,6 +9,27 @@ export interface Author {
   given?: string; // nama depan (kosong untuk lembaga)
 }
 
+/** Hasil membandingkan judul metadata DOI dengan isi file/halaman. DOI yang sah belum tentu isinya cocok. */
+export type DoiCheck = "cocok" | "tidak-cocok" | "tidak-dapat-dinilai";
+
+export interface Provenance {
+  method: "doi" | "url" | "file";
+  /** URL yang diminta (tanpa fragmen). */
+  url?: string;
+  /** URL akhir setelah pengalihan. */
+  finalUrl?: string;
+  fileName?: string;
+  /** Waktu pengambilan, ISO 8601. */
+  fetchedAt: string;
+  contentType?: string;
+  bytes?: number;
+  /** SHA-256 byte asli, heksadesimal. */
+  sha256?: string;
+  /** DOI yang ditemukan di dalam isi, bila ada. */
+  doiInText?: string;
+  doiCheck?: DoiCheck;
+}
+
 export interface Source {
   id: string; // "S1", "S2", ...
   type: "jurnal" | "buku" | "pedoman" | "web";
@@ -27,6 +48,8 @@ export interface Source {
   content?: string;
   origin: "crossref" | "manual";
   verified: boolean;
+  /** T04: asal-usul isi/metadata sumber (diisi saat impor DOI, URL, atau file). Sumber lama dan isian manual tidak memilikinya. */
+  provenance?: Provenance;
 }
 
 export interface DocSection {

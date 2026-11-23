@@ -76,5 +76,6 @@ export async function lookupDoi(rawDoi: string): Promise<Omit<Source, "id">> {
     content: abstract.length >= 200 ? abstract : undefined,
     origin: "crossref",
     verified: true,
+    provenance: { method: "doi", url: `https://api.crossref.org/works/${path}`, fetchedAt: new Date().toISOString() },
   };
 }

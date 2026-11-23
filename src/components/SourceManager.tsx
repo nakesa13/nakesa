@@ -1,8 +1,9 @@
 "use client";
 import { useId, useState } from "react";
-import type { Source } from "@/lib/types";
+import type { Provenance, Source } from "@/lib/types";
 import { authorsToText, findDoi, parseAuthors } from "@/lib/citations";
 import { apiPost, apiUpload } from "@/lib/client";
+import { doiContentCheck } from "@/lib/provenance";
 import { Icon } from "./Icon";
 
 type Draft = Omit<Source, "id">;
@@ -21,6 +22,25 @@ function Field({ label, className, help, children }: { label: string; className?
 }
 
 const TYPE_LABEL: Record<Source["type"], string> = { jurnal: "Jurnal", buku: "Buku", pedoman: "Pedoman", web: "Situs web" };
+
+/** Respons /api/extract-source dan /api/import-url. */
+interface Extracted {
+  text: string;
+  pages: number | null;
+  truncated: boolean;
+  chars: number;
+  title?: string;
+  doi?: string;
+  provenance?: Provenance;
+}
+
+function hostOf(u?: string): string {
+  try {
+    return u ? new URL(u).host : "URL";
+  } catch {
+    return "URL";
+  }
+}
 
 export function nextSourceId(list: { id: string }[]): string {
   const max = list.reduce((m, s) => Math.max(m, Number(s.id.replace(/\D/g, "")) || 0), 0);
@@ -76,6 +96,7 @@ function SourceForm({
       content: content.trim() || undefined,
       origin: changed ? "manual" : (initial?.origin ?? "manual"),
       verified: changed ? false : (initial?.verified ?? false),
+      provenance: initial?.provenance,
     });
   };
 
@@ -172,44 +193,89 @@ export function SourceManager({
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [urlText, setUrlText] = useState("");
+  const [urlBusy, setUrlBusy] = useState(false);
   // Hasil baca file yang metadatanya belum lengkap: ditampilkan sebagai formulir terisi isi sumber.
   const [prefill, setPrefill] = useState<Draft | null>(null);
   const fileId = useId();
+  const urlId = useId();
 
   const addDraft = (d: Draft) => onChange([...sources, { ...d, id: nextSourceId(sources) }]);
+
+  /** Hasil baca file atau URL: cari DOI, ambil metadata Crossref, lalu PERIKSA apakah judulnya cocok dengan isi sebelum dipasang. */
+  const handleExtracted = async (r: Extracted) => {
+    const content = r.text;
+    const fromUrl = r.provenance?.method === "url";
+    const found = r.doi ?? findDoi(content);
+    const base: Provenance | undefined = r.provenance ? { ...r.provenance, doiInText: found ?? undefined } : undefined;
+    if (found && sources.some((s) => s.doi && s.doi.toLowerCase() === found.toLowerCase())) {
+      setMsg({ kind: "err", text: `DOI ${found} di sumber ini sudah ada di daftar sumber.` });
+      return;
+    }
+    let meta: Draft | null = null;
+    if (found) {
+      try {
+        meta = (await apiPost<{ source: Draft }>("/api/doi", { doi: found }, accessCode)).source;
+      } catch {
+        /* DOI tidak dapat diverifikasi: lanjut ke isian manual */
+      }
+    }
+    if (meta) {
+      // DOI yang sah di Crossref belum berarti isi ini adalah artikelnya.
+      const check = doiContentCheck(meta.title, content);
+      const prov = base ? { ...base, doiCheck: check } : undefined;
+      if (check === "cocok") {
+        addDraft({ ...meta, content, provenance: prov });
+        setMsg({ kind: "ok", text: `DOI ${found} terdeteksi dan judul dari Crossref cocok dengan isi: metadata terverifikasi, isi tersimpan sebagai isi sumber.` });
+        return;
+      }
+      setAdding(false);
+      if (check === "tidak-cocok") {
+        setPrefill({ type: fromUrl ? "web" : "jurnal", title: "", authors: [], year: "", url: r.provenance?.finalUrl, origin: "manual", verified: false, content, provenance: prov });
+        setMsg({
+          kind: "err",
+          text: `DOI ${found} ada di isi, tetapi judul Crossref ("${meta.title.slice(0, 120)}") tidak muncul di bagian awal isi. Mungkin itu DOI artikel lain yang dikutip. Metadata TIDAK dipasang otomatis: isi metadata yang benar di bawah.`,
+        });
+      } else {
+        setPrefill({ ...meta, origin: "manual", verified: false, content, provenance: prov });
+        setMsg({
+          kind: "err",
+          text: `DOI ${found} ditemukan, tetapi kecocokannya dengan isi belum bisa dipastikan. Metadata Crossref diisikan sebagai usulan dan belum berstatus terverifikasi: periksa terhadap isi, lalu simpan.`,
+        });
+      }
+      return;
+    }
+    setAdding(false);
+    setPrefill({ type: fromUrl ? "web" : "jurnal", title: r.title ?? "", authors: [], year: "", url: r.provenance?.finalUrl, origin: "manual", verified: false, content, provenance: base });
+    setMsg({
+      kind: "ok",
+      text: `Teks terbaca (${r.chars.toLocaleString("id-ID")} karakter${r.truncated ? ", hanya 60.000 karakter pertama dipakai" : ""}). ${found ? "DOI di sumber ini tidak dapat diverifikasi." : "DOI tidak ditemukan."} Lengkapi metadata di bawah, lalu simpan.`,
+    });
+  };
 
   const upload = async (file: File | undefined) => {
     if (!file) return;
     setUploading(true);
     setMsg(null);
     try {
-      const r = await apiUpload<{ text: string; pages: number | null; truncated: boolean; chars: number }>("/api/extract-source", file, accessCode);
-      const content = r.text;
-      const found = findDoi(content);
-      if (found && sources.some((s) => s.doi && s.doi.toLowerCase() === found.toLowerCase())) {
-        setMsg({ kind: "err", text: `DOI ${found} di file ini sudah ada di daftar sumber.` });
-        return;
-      }
-      if (found) {
-        try {
-          const { source } = await apiPost<{ source: Draft }>("/api/doi", { doi: found }, accessCode);
-          addDraft({ ...source, content });
-          setMsg({ kind: "ok", text: `Teks file terbaca dan DOI ${found} terdeteksi: metadata terverifikasi dari Crossref, isi file tersimpan sebagai isi sumber.` });
-          return;
-        } catch {
-          /* DOI tidak dapat diverifikasi: lanjut ke isian manual */
-        }
-      }
-      setAdding(false);
-      setPrefill({ type: "jurnal", title: "", authors: [], year: "", origin: "manual", verified: false, content });
-      setMsg({
-        kind: "ok",
-        text: `Teks terbaca (${r.chars.toLocaleString("id-ID")} karakter${r.truncated ? ", hanya 60.000 karakter pertama dipakai" : ""}). ${found ? "DOI di file tidak dapat diverifikasi." : "DOI tidak ditemukan di file."} Lengkapi metadata di bawah, lalu simpan.`,
-      });
+      await handleExtracted(await apiUpload<Extracted>("/api/extract-source", file, accessCode));
     } catch (e) {
       setMsg({ kind: "err", text: e instanceof Error ? e.message : "Gagal membaca file." });
     } finally {
       setUploading(false);
+    }
+  };
+
+  const importUrl = async () => {
+    if (!urlText.trim()) return;
+    setUrlBusy(true);
+    setMsg(null);
+    try {
+      await handleExtracted(await apiPost<Extracted>("/api/import-url", { url: urlText.trim() }, accessCode));
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : "Gagal mengambil URL." });
+    } finally {
+      setUrlBusy(false);
     }
   };
 
@@ -258,6 +324,28 @@ export function SourceManager({
           </button>
         </div>
         {msg && <p className={`mt-2 text-sm ${msg.kind === "ok" ? "text-emerald-600" : "text-red-600"}`}>{msg.text}</p>}
+        <div className="mt-3 border-t border-line pt-3">
+          <label className="label" htmlFor={urlId}>
+            Atau ambil dari URL (halaman web, PDF, atau teks)
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              id={urlId}
+              className="field"
+              inputMode="url"
+              value={urlText}
+              onChange={(e) => setUrlText(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void importUrl()}
+              placeholder="https://..."
+            />
+            <button className="btn btn-primary shrink-0" onClick={() => void importUrl()} disabled={urlBusy || !urlText.trim()}>
+              {urlBusy ? "Mengambil…" : "Ambil dari URL"}
+            </button>
+          </div>
+          <p className="help mt-1">
+            Hanya alamat http/https publik (alamat internal diblokir). Halaman dibaca sekali dan tidak disimpan di server; sumber dicatat beserta URL dan waktu pengambilannya. Isi halaman diperlakukan sebagai data, bukan instruksi.
+          </p>
+        </div>
         <div className="mt-3 border-t border-line pt-3">
           <label className="label" htmlFor={fileId}>
             Atau unggah file jurnal/referensi (PDF, Word .docx, atau .txt)
@@ -362,7 +450,14 @@ export function SourceManager({
                       <div className="mt-1.5 flex flex-wrap gap-1.5">
                         {s.verified ? <span className="badge badge-ok">Terverifikasi Crossref</span> : <span className="badge badge-warn">Isian manual</span>}
                         {usable ? <span className="badge badge-ok">Isi tersedia</span> : <span className="badge badge-mute">Tanpa isi: tidak dikutip AI</span>}
+                        {s.provenance?.doiCheck === "tidak-cocok" && <span className="badge badge-warn">DOI tidak cocok dengan isi</span>}
+                        {s.provenance?.doiCheck === "tidak-dapat-dinilai" && <span className="badge badge-mute">Kecocokan DOI belum pasti</span>}
                       </div>
+                      {s.provenance && s.provenance.method !== "doi" && (
+                        <p className="mt-1 text-xs text-muted">
+                          {s.provenance.method === "url" ? `Diambil dari ${hostOf(s.provenance.finalUrl ?? s.provenance.url)}` : `File: ${s.provenance.fileName ?? "tanpa nama"}`} · {s.provenance.fetchedAt.slice(0, 10)}
+                        </p>
+                      )}
                     </div>
                     <div className="flex shrink-0 gap-1.5">
                       <button className="btn btn-sm" onClick={() => setEditing(s.id)}>
