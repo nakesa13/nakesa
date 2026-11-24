@@ -8,6 +8,10 @@ export interface StoredTemplate {
   analysis: Analysis;
   mapping: Mapping;
   savedAt: number;
+  /** T11: SHA-256 byte .docx. Tidak ada pada template yang disimpan sebelum T11 (dihitung saat dibutuhkan). */
+  templateId?: string;
+  /** T11: naik 1 setiap template diganti atau pemetaan diubah. Tidak ada pada template lama (dianggap 1). */
+  version?: number;
 }
 
 const DB_NAME = "nakesa";

@@ -5,6 +5,28 @@ const idx = (v: unknown): number | null => (typeof v === "number" && Number.isIn
 const FIELD_IDS = new Set<string>(COVER_FIELDS.map((f) => f.id));
 const TOC_MODES = new Set<string>(["keep", "replace", "add", "none"]);
 
+/**
+ * T11: pilihan pemetaan yang akan diabaikan atau menghasilkan dokumen yang tidak diharapkan. Dipakai untuk memberi tahu pengguna
+ * SEBELUM dokumen dibuat (buildDocxFromTemplate membuang pilihan seperti ini secara diam-diam atau menolak bila awal isi tidak sah).
+ * `total` = jumlah blok di template (Analysis.total).
+ */
+export function mappingIssues(m: Mapping, total: number): string[] {
+  const out: string[] = [];
+  if (m.bodyStart >= total) out.push("Awal isi berada di luar dokumen. Pilih ulang paragraf pertama isi.");
+  if (m.bibHeading !== null && m.bibHeading <= m.bodyStart) {
+    out.push("Judul Daftar Pustaka harus berada setelah awal isi. Pilihan ini diabaikan dan daftar pustaka ditambahkan di akhir.");
+  }
+  if (m.bibEnd !== null && (m.bibHeading === null || m.bibEnd <= m.bibHeading)) {
+    out.push("Bagian setelah daftar pustaka harus berada sesudah judul Daftar Pustaka. Pilihan ini diabaikan.");
+  }
+  if (m.tocMode === "replace" && (m.tocHeading === null || m.tocHeading >= m.bodyStart)) {
+    out.push('Mode "ganti daftar isi" butuh judul DAFTAR ISI yang berada sebelum awal isi. Tanpa itu daftar isi lama tidak diganti.');
+  }
+  const inBody = Object.keys(m.coverFields).filter((k) => Number(k) >= m.bodyStart);
+  if (inBody.length) out.push(`Data sampul pada paragraf #${inBody.join(", #")} berada di dalam area isi dan diabaikan.`);
+  return out;
+}
+
 /** Validasi pemetaan dari klien; kembalikan null bila bentuknya tidak sah. */
 export function parseMapping(v: unknown): Mapping | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;

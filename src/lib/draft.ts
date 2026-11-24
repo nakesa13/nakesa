@@ -2,6 +2,7 @@ import type { DocType, Input, Source } from "./types";
 import type { SectionDef } from "@/templates/types";
 import { TEMPLATES } from "@/templates";
 import { resolveSection, type OutlineItem } from "./outline";
+import type { TemplateRef } from "./template/ref";
 
 /** Draf satu dokumen (disimpan di localStorage per jenis dokumen). */
 export interface Draft {
@@ -11,6 +12,8 @@ export interface Draft {
   step: number;
   /** Tahap B: struktur bab dari template mahasiswa. null = struktur bawaan NAKESA. */
   outline?: OutlineItem[] | null;
+  /** T11: template (id, versi, pemetaan) yang dipakai dokumen ini. null/tidak ada = format bawaan NAKESA. */
+  template?: TemplateRef | null;
 }
 
 export const EMPTY_DRAFT: Draft = { input: {}, sources: [], texts: {}, step: 0, outline: null };

@@ -310,6 +310,22 @@ function setUpdateFields(pkg: Pkg) {
 
 // ---------- utama ----------
 
+/**
+ * T11: template tidak tepercaya. Tautan ke template luar (w:attachedTemplate) membuat Word mengambil berkas dari alamat lain
+ * saat dokumen hasil dibuka, jadi dibuang. Berkas relasi pengaturan yang menunjuk keluar ikut dibuang.
+ */
+function dropAttachedTemplate(pkg: Pkg): void {
+  const f = pkg.zip.file("word/settings.xml");
+  if (!f) return;
+  const txt = f.asText();
+  if (!/attachedTemplate/.test(txt)) return;
+  const sd = parseXml(txt, "pengaturan");
+  for (const e of descendants(sd.documentElement, "attachedTemplate")) e.parentNode?.removeChild(e);
+  pkg.zip.file("word/settings.xml", serialize(sd));
+  const rels = pkg.zip.file("word/_rels/settings.xml.rels");
+  if (rels && /TargetMode\s*=\s*["']External["']/i.test(rels.asText())) pkg.zip.remove("word/_rels/settings.xml.rels");
+}
+
 function removeRange(pkg: Pkg, from: number, to: number): Element | null {
   let sect: Element | null = null;
   for (let i = from; i < to; i++) {
@@ -509,6 +525,7 @@ export async function buildDocxFromTemplate(b: BuildInput, template: Uint8Array,
   }
 
   // 7) simpan
+  dropAttachedTemplate(pkg);
   if (tocUsed) setUpdateFields(pkg);
   pkg.zip.file("word/document.xml", serialize(doc));
   // Susun paket baru hanya dari berkas (bukan entri folder). Jangan pakai zip.remove("word/"): pada PizZip itu menghapus folder BESERTA seluruh isinya,

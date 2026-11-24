@@ -2,7 +2,37 @@ import PizZip from "pizzip";
 import { TemplateError, attr, child, childrenNamed, descendants, elems, lname, parseXml } from "./xml";
 
 export const MAX_TEMPLATE_BYTES = 8 * 1024 * 1024;
-const MAX_UNZIPPED = 80 * 1024 * 1024;
+export const MAX_UNZIPPED = 80 * 1024 * 1024;
+/** T11: batas paket tidak tepercaya. */
+export const MAX_ENTRIES = 1500;
+export const MAX_ENTRY_BYTES = 40 * 1024 * 1024;
+/** Nisbah isi/terkompresi yang wajar untuk .docx adalah belasan; di atas ini (dan di atas lantai) dianggap zip bomb. */
+export const MAX_RATIO = 100;
+export const RATIO_FLOOR = 5 * 1024 * 1024;
+
+// Segmen "..", jalur mutlak, garis miring terbalik, huruf drive, dan NUL. Nama entri seperti ini tidak pernah ada di .docx sah.
+const UNSAFE_NAME = /(^|\/)\.\.(\/|$)|^\/|\\|^[A-Za-z]:|\0/;
+
+/**
+ * Periksa paket zip sebelum ada isinya yang dibaca. Ukuran memakai angka dari header zip (PizZip tidak bisa membaca bertahap),
+ * jadi bagian yang dibaca kemudian tetap dibatasi lagi per bagian (parseXml: MAX_XML_CHARS).
+ */
+export function assertSafeZip(zip: PizZip, compressedBytes: number): void {
+  const names = Object.keys(zip.files);
+  if (names.length > MAX_ENTRIES) throw new TemplateError("File Word memuat terlalu banyak berkas.");
+  let total = 0;
+  for (const name of names) {
+    if (UNSAFE_NAME.test(name)) throw new TemplateError("File Word memuat jalur berkas yang tidak aman dan ditolak.");
+    const declared = (zip.files[name] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
+    if (typeof declared === "number") {
+      if (declared > MAX_ENTRY_BYTES) throw new TemplateError("Isi file template terlalu besar.");
+      total += declared;
+    }
+  }
+  if (total > MAX_UNZIPPED) throw new TemplateError("Isi file template terlalu besar.");
+  if (total > RATIO_FLOOR && total / Math.max(compressedBytes, 1) > MAX_RATIO) throw new TemplateError("Isi file template terkompresi secara tidak wajar dan ditolak.");
+  if (names.some((n) => /(^|\/)vbaProject\.bin$/i.test(n))) throw new TemplateError("Template memuat makro dan ditolak. Simpan template sebagai .docx biasa (bukan .docm).");
+}
 
 export interface StyleDef {
   id: string;
@@ -77,11 +107,7 @@ export function openPackage(buf: Uint8Array): Pkg {
   const docFile = zip.file("word/document.xml");
   if (!docFile) throw new TemplateError("File bukan dokumen Word (.docx) yang valid.");
 
-  let total = 0;
-  for (const name of Object.keys(zip.files)) {
-    total += (zip.files[name] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0;
-  }
-  if (total > MAX_UNZIPPED) throw new TemplateError("Isi file template terlalu besar.");
+  assertSafeZip(zip, buf.length);
 
   const doc = parseXml(docFile.asText(), "isi dokumen");
   const body = child(doc.documentElement, "body");

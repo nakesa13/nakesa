@@ -152,7 +152,9 @@ function pdfPages(pageTexts: string[]): Uint8Array {
   objs[2] = `<< /Type /Pages /Kids [${pageTexts.map((_, i) => `${4 + 2 * i} 0 R`).join(" ")}] /Count ${n} >>`;
   objs[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
   pageTexts.forEach((t, i) => {
-    const stream = t ? `BT /F1 10 Tf 20 700 Td (${t}) Tj ET` : "";
+    // Dipecah per baris (maks 80 karakter): teks satu baris panjang keluar dari tepi halaman dan dipotong oleh pdf.js.
+    const lines = t.match(/.{1,80}(\s|$)/g) ?? [];
+    const stream = t ? `BT /F1 10 Tf 12 TL 20 750 Td ${lines.map((l) => `(${l.trim()}) Tj T*`).join(" ")} ET` : "";
     objs[4 + 2 * i] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + 2 * i} 0 R >>`;
     objs[5 + 2 * i] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
   });

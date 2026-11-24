@@ -12,6 +12,7 @@ import { JournalField } from "./JournalField";
 import { SourceManager, nextSourceId } from "./SourceManager";
 import { TemplateStep } from "./TemplateStep";
 import { loadTemplate, saveTemplate, type StoredTemplate } from "@/lib/templateStore";
+import { makeRef, sameRef } from "@/lib/template/ref";
 import { OutlineStep } from "./OutlineStep";
 import { dropDynamicTexts, resolveSection, visibleStepIds, type OutlineItem } from "@/lib/outline";
 import { EMPTY_DRAFT, type Draft } from "@/lib/draft";
@@ -54,6 +55,20 @@ export function Wizard({ docType }: { docType: DocType }) {
       alive = false;
     };
   }, [docType]);
+
+  // T11: simpan id, versi, dan pemetaan template bersama dokumen (draf), supaya dokumen tahu template mana yang dipakainya.
+  useEffect(() => {
+    if (tplLoading) return;
+    let alive = true;
+    void (async () => {
+      const ref = tplRec ? await makeRef(tplRec) : null;
+      if (!alive) return;
+      setDraft((d) => (sameRef(d.template, ref) ? d : { ...d, template: ref }));
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [tplRec, tplLoading, setDraft]);
 
   const outline = draft.outline ?? null;
   // Tahap B: bagian dokumen mengikuti struktur dari template mahasiswa bila sudah dikonfirmasi; bila tidak, struktur bawaan.
@@ -221,7 +236,7 @@ export function Wizard({ docType }: { docType: DocType }) {
     if (!tplRec) return;
     // Format judul per tingkat mengikuti judul nyata di template, bukan tebakan Tahap A.
     const s = tplRec.mapping.samples;
-    const rec: StoredTemplate = { ...tplRec, mapping: { ...tplRec.mapping, samples: { ...s, h1: samples.h1 ?? s.h1, h2: samples.h2 ?? s.h2, h3: samples.h3 ?? s.h3 } } };
+    const rec: StoredTemplate = { ...tplRec, mapping: { ...tplRec.mapping, samples: { ...s, h1: samples.h1 ?? s.h1, h2: samples.h2 ?? s.h2, h3: samples.h3 ?? s.h3 } }, version: (tplRec.version ?? 1) + 1 };
     setTplRec(rec);
     void saveTemplate(docType, rec);
   };
@@ -242,7 +257,8 @@ export function Wizard({ docType }: { docType: DocType }) {
 
   const reset = () => {
     if (window.confirm("Hapus semua isian dan hasil untuk dokumen ini?")) {
-      setDraft(EMPTY_DRAFT);
+      // T11: template tetap terpasang, jadi rujukannya (id, versi, pemetaan) ikut dipertahankan di draf kosong.
+      setDraft({ ...EMPTY_DRAFT, template: draft.template ?? null });
       setStripped({});
       setSecErr({});
       setErrors({});

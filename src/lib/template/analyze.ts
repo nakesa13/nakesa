@@ -307,6 +307,29 @@ export function analyzePackage(pkg: Pkg): Analysis {
     warnings.push("Template memiliki revisi (track changes) yang belum diterima. Terima semua revisi di Word dulu agar hasilnya sesuai.");
   }
 
+  // T11: elemen yang tidak dikenal/ tidak bisa dipertahankan diberi peringatan, tidak dibuang diam-diam.
+  // Isi area isi diganti seluruhnya oleh dokumen Anda, jadi tabel, gambar, kotak teks, kontrol konten, dan catatan kaki di sana ikut hilang.
+  const replaced = pkg.blocks.slice(start, endIdx);
+  const countIn = (name: string) => replaced.reduce((acc, el) => acc + (lname(el) === name ? 1 : 0) + descendants(el, name).length, 0);
+  const lost: string[] = [];
+  const nTbl = countIn("tbl");
+  const nImg = countIn("drawing") + countIn("pict");
+  const nBox = countIn("txbxContent");
+  const nSdt = countIn("sdt");
+  const nFn = countIn("footnoteReference") + countIn("endnoteReference");
+  if (nTbl) lost.push(`${nTbl} tabel`);
+  if (nImg) lost.push(`${nImg} gambar`);
+  if (nBox) lost.push(`${nBox} kotak teks`);
+  if (nSdt) lost.push(`${nSdt} kontrol konten`);
+  if (nFn) lost.push(`${nFn} catatan kaki`);
+  if (lost.length) {
+    warnings.push(`Area isi template memuat ${lost.join(", ")}. Semuanya akan diganti oleh isi dokumen Anda. Bila perlu dipertahankan, pindahkan ke luar area isi (mis. sampul atau lampiran) atau atur ulang "Paragraf pertama isi".`);
+  }
+  const settingsXml = pkg.zip.file("word/settings.xml");
+  if (settingsXml && /attachedTemplate/.test(settingsXml.asText())) {
+    warnings.push("Template terhubung ke template Word lain. Tautan itu dibuang saat dokumen dibuat.");
+  }
+
   const coverFields = placeholders.size ? {} : guessCover(blocks, start);
 
   const suggested: Mapping = {

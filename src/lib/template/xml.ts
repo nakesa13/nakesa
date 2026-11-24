@@ -5,13 +5,25 @@ export const XML_NS = "http://www.w3.org/XML/1998/namespace";
 
 export class TemplateError extends Error {}
 
+/** Batas panjang satu bagian XML (karakter). Word biasa jauh di bawah ini. */
+export const MAX_XML_CHARS = 30_000_000;
+
 export function parseXml(xml: string, what = "dokumen"): Document {
+  if (xml.length > MAX_XML_CHARS) throw new TemplateError(`Bagian ${what} pada file Word terlalu besar.`);
+  // T11: Word tidak menulis DOCTYPE/ENTITY di bagian ini. Menolaknya menutup entity expansion (billion laughs) dan XXE.
+  if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new TemplateError(`Bagian ${what} pada file Word memuat deklarasi yang tidak diizinkan.`);
   const errors: string[] = [];
-  const doc = new DOMParser({
-    onError: (level, msg) => {
-      if (level !== "warning") errors.push(msg);
-    },
-  }).parseFromString(xml, "text/xml") as unknown as Document;
+  let doc: Document;
+  try {
+    doc = new DOMParser({
+      onError: (level, msg) => {
+        if (level !== "warning") errors.push(msg);
+      },
+    }).parseFromString(xml, "text/xml") as unknown as Document;
+  } catch {
+    // xmldom melempar ParseError fatal untuk XML yang sangat rusak; ini input pengguna, bukan galat server (422, bukan 500).
+    throw new TemplateError(`Bagian ${what} pada file Word tidak dapat dibaca.`);
+  }
   if (errors.length || !doc.documentElement) throw new TemplateError(`Bagian ${what} pada file Word tidak dapat dibaca.`);
   return doc;
 }

@@ -3,6 +3,8 @@ import { useId, useState } from "react";
 import { apiUpload } from "@/lib/client";
 import { deleteTemplate, saveTemplate, type StoredTemplate } from "@/lib/templateStore";
 import { COVER_FIELDS, type Analysis, type CoverField, type Mapping, type TocMode } from "@/lib/template/types";
+import { mappingIssues } from "@/lib/template/mapping";
+import { sha256Hex } from "@/lib/template/ref";
 
 const TOC_LABEL: Record<TocMode, string> = {
   keep: "Pertahankan daftar isi dari template (diperbarui otomatis oleh Word)",
@@ -76,7 +78,9 @@ export function TemplateStep({
     setBusy(true);
     try {
       const analysis = await apiUpload<Analysis>("/api/template/analyze", file, accessCode);
-      const rec: StoredTemplate = { name: file.name, size: file.size, data: await file.arrayBuffer(), analysis, mapping: analysis.suggested, savedAt: Date.now() };
+      const data = await file.arrayBuffer();
+      // T11: id = hash isi template; versi mulai 1 dan naik setiap template diganti atau pemetaan diubah.
+      const rec: StoredTemplate = { name: file.name, size: file.size, data, analysis, mapping: analysis.suggested, savedAt: Date.now(), templateId: await sha256Hex(data), version: (record?.version ?? 0) + 1 };
       await persist(rec);
       onChange(rec);
     } catch (e) {
@@ -88,7 +92,7 @@ export function TemplateStep({
 
   const setMapping = (patch: Partial<Mapping>) => {
     if (!record) return;
-    const rec = { ...record, mapping: { ...record.mapping, ...patch } };
+    const rec = { ...record, mapping: { ...record.mapping, ...patch }, version: (record.version ?? 1) + 1 };
     onChange(rec);
     void persist(rec);
   };
@@ -141,6 +145,7 @@ export function TemplateStep({
     setMapping({ coverFields: next });
   };
   const textAt = (i: number | null) => (i === null ? "-" : (a.blocks.find((b) => b.i === i)?.text.trim().slice(0, 50) ?? `#${i}`));
+  const issues = mappingIssues(m, a.total);
 
   return (
     <section className="space-y-4">
@@ -170,6 +175,9 @@ export function TemplateStep({
         </dl>
         {a.warnings.map((w) => (
           <p key={w} className="mt-3 rounded-md bg-[var(--warn-bg)] p-3 text-sm text-[var(--warn-ink)]">{w}</p>
+        ))}
+        {issues.map((w) => (
+          <p key={w} className="mt-3 rounded-md bg-[var(--warn-bg)] p-3 text-sm text-[var(--warn-ink)]">Pengaturan manual: {w}</p>
         ))}
         <div className="mt-4 rounded-md bg-page p-3 text-sm">
           <p>

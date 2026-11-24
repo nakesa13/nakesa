@@ -30,8 +30,12 @@ npm run build
 | `urlimport-transport.test.ts` | T04: transport `node:http` nyata ke server lokal (IP di-pin, header Host asli), loopback tidak pernah dihubungi, entitas HTML ekstrem |
 | `import-url-route.test.ts` | T04: route `/api/import-url` (input berbahaya, kode akses, batas 30/jam, pemetaan galat, galat tak terduga tidak bocor) |
 | `provenance.test.ts` | T04: `doiContentCheck` (DOI sah != isi cocok, batas 80%/50%), `parseProvenance` dari klien tak tepercaya, integritas ukuran+sha256 PDF |
+| `route-provenance.test.ts` | T04: provenance yang dicatat `/api/extract-source` (nama berkas dibersihkan, ukuran, sha256) dan `/api/doi` (metode `doi`, hanya Crossref) |
 | `routes.test.ts` | Route `/api/doi`, `/api/extract-source` (termasuk PDF berteks, PDF tanpa teks, tipe palsu, ukuran), `/api/template/analyze`, `/api/docx` (JSON dan multipart dengan template) |
 | `docx.test.ts` | Builder .docx |
+| `journal.test.ts` | T10: Reading Journal: teks parsial, DOI tidak cocok, angka statistik, nama penulis, ringkasan vs telaah kritis, "tidak dilaporkan" |
+| `journal-extract.test.ts` | T10: PDF yang hanya sebagian terbaca ditandai (unpdf ditiru) |
+| `template-safety.test.ts` | T11: zip bomb, path traversal, banyak entri, makro, DOCTYPE/ENTITY, XML rusak = 422, peringatan elemen tak dikenal, tautan template luar dibuang, `mappingIssues`, id/versi/pemetaan template (`ref.ts`) |
 | lainnya | Lihat `docs/audit/BASELINE.md` bagian 5 |
 
 Catatan:
@@ -43,7 +47,7 @@ Catatan:
 
 ## Temuan yang dikunci test tetapi belum diperbaiki
 
-- `template/xml.ts` `parseXml`: XML rusak di `word/document.xml` melempar `ParseError` fatal dari xmldom yang lolos dari `onError`. Route `/api/template/analyze` membalas **500**, seharusnya **422**. Test hanya mengunci bahwa berkas ditolak (status >= 400). Perbaikan dan test regresi masuk T11.
+- ~~`template/xml.ts` `parseXml`: XML rusak ... membalas 500~~ **Diperbaiki di T11**: `parseXml` menangkap `ParseError` fatal dan melempar `TemplateError`, jadi route membalas 422. Dikunci oleh `template-safety.test.ts`. Test lama di `routes.test.ts` (status >= 400) tetap lulus.
 - `guard.ts`: hitungan laju dibagi antar route (satu bucket per IP). Dicatat untuk T25.
 
 ## Belum tercakup
