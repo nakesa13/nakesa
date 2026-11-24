@@ -5,7 +5,7 @@ import type { DocType, Input, SectionWarnings, Source } from "@/lib/types";
 import { TEMPLATES, resolveTitle } from "@/templates";
 import type { FieldDef, SectionDef, StepDef } from "@/templates/types";
 import { analyzeSection, journalSourceFromInput, renderDataSection, KOSONG } from "@/lib/case";
-import { DRAFT_PREFIX, IDENTITY_IDS, LIBRARY_KEY, SETTINGS_DEFAULT, SETTINGS_KEY, apiDocx, apiPost, safeFileName, saveBlob, type Settings } from "@/lib/client";
+import { DRAFT_PREFIX, LIBRARY_KEY, SETTINGS_DEFAULT, SETTINGS_KEY, apiDocx, apiPost, safeFileName, saveBlob, type Settings } from "@/lib/client";
 import { useHydrated, useLocalState } from "@/lib/useLocalState";
 import { Icon } from "./Icon";
 import { JournalField } from "./JournalField";
@@ -16,10 +16,14 @@ import { makeRef, sameRef } from "@/lib/template/ref";
 import { OutlineStep } from "./OutlineStep";
 import { dropDynamicTexts, resolveSection, visibleStepIds, type OutlineItem } from "@/lib/outline";
 import { EMPTY_DRAFT, type Draft } from "@/lib/draft";
-import { CASE_KEY, EMPTY_CASE, buildInput, caseDerivedInput, isLinked, isSharedField, linkConfirmMessage, linkDoc, lpTitleFor, reusePreview, searchKeywords, unlinkDoc, type SharedCase } from "@/lib/kasus";
+import { CASE_KEY, EMPTY_CASE, buildInput, caseDerivedInput, isLinked, isSharedField, linkConfirmMessage, linkDoc, reusePreview, searchKeywords, unlinkDoc, type SharedCase } from "@/lib/kasus";
 import { countNeedsReference, pendingAiSections } from "@/lib/lp";
 import { isAnc } from "@/lib/anc";
 import { SerialField } from "./SerialField";
+import { PreviewPane } from "./PreviewPane";
+import { buildPreview } from "@/lib/preview";
+import { documentTitle, identityPayload, sectionPayload } from "@/lib/export";
+import { warningText } from "@/lib/docx-warnings";
 
 const EMPTY_LIB: Source[] = [];
 
@@ -40,6 +44,9 @@ export function Wizard({ docType }: { docType: DocType }) {
   const [stripped, setStripped] = useState<Record<string, string[]>>({});
   const [running, setRunning] = useState(false);
   const [dl, setDl] = useState<{ busy: boolean; error: string }>({ busy: false, error: "" });
+  // T12: pratinjau perkiraan dan peringatan dari pemeriksa .docx di server.
+  const [showPreview, setShowPreview] = useState(false);
+  const [dlWarn, setDlWarn] = useState<string[]>([]);
   const stopRef = useRef(false);
   const [tplRec, setTplRec] = useState<StoredTemplate | null>(null);
   const [tplLoading, setTplLoading] = useState(true);
@@ -197,25 +204,21 @@ export function Wizard({ docType }: { docType: DocType }) {
     const emptyManual = sections.filter((s) => s.manual && !textOf(s).trim());
     if ((empty.length || emptyManual.length) && !window.confirm(`${empty.length} bagian AI dan ${emptyManual.length} bagian isi-sendiri masih kosong dan akan tampil tanpa isi (bagian isi-sendiri ditulis "${KOSONG}"). Tetap unduh?`)) return;
     setDl({ busy: true, error: "" });
+    setDlWarn([]);
     try {
-      const judul = (effectiveInput.judul ?? "").trim() || (docType === "RJ" ? effectiveInput.j_title ?? "" : "") || (docType === "LP" ? lpTitleFor(effectiveInput.jenis_asuhan ?? "", effectiveInput.kasus ?? "") : "") || tpl.name;
+      const judul = documentTitle(docType, effectiveInput, tpl.name);
       const blob = await apiDocx(
         {
           docType,
           judul,
           style: settings.style,
-          identity: Object.fromEntries(IDENTITY_IDS.map((k) => [k, effectiveInput[k] ?? ""])),
+          identity: identityPayload(effectiveInput),
           sources,
-          sections: sections.map((s) => ({
-            id: s.id,
-            title: resolveTitle(s, effectiveInput),
-            level: s.level,
-            kind: s.kind,
-            text: s.kind === "heading" ? "" : s.manual && !textOf(s).trim() ? KOSONG : textOf(s),
-          })),
+          sections: sectionPayload(sections, effectiveInput, textOf),
         },
         settings.accessCode,
-        tplRec ? { data: tplRec.data, mapping: tplRec.mapping } : undefined
+        tplRec ? { data: tplRec.data, mapping: tplRec.mapping } : undefined,
+        setDlWarn
       );
       saveBlob(blob, safeFileName(judul, tpl.short));
       setDl({ busy: false, error: "" });
@@ -280,6 +283,19 @@ export function Wizard({ docType }: { docType: DocType }) {
   };
 
   if (!hydrated) return <div className="card h-64 animate-pulse" />;
+
+  // T12: pratinjau perkiraan (dihitung hanya saat dibuka). Bahan sama dengan unduhan .docx, tetapi tidak meniru template kampus.
+  const previewDoc = showPreview
+    ? buildPreview({
+        coverTitle: tpl.coverTitle,
+        judul: documentTitle(docType, effectiveInput, tpl.name),
+        identity: identityPayload(effectiveInput),
+        sections: sectionPayload(sections, effectiveInput, textOf),
+        sources,
+        style: settings.style,
+        chapterStyle: tpl.chapterStyle,
+      })
+    : null;
 
   const renderField = (f: FieldDef) => {
     if (f.type === "journal") {
@@ -461,6 +477,9 @@ export function Wizard({ docType }: { docType: DocType }) {
                 <button className="btn" onClick={download} disabled={dl.busy}>
                   <Icon name="download" className="h-4 w-4" /> {dl.busy ? "Menyusun…" : "Unduh .docx"}
                 </button>
+                <button className="btn" onClick={() => setShowPreview((v) => !v)}>
+                  <Icon name="file" className="h-4 w-4" /> {showPreview ? "Tutup pratinjau" : "Pratinjau / PDF (perkiraan)"}
+                </button>
               </div>
             </div>
             {!hasUsableSource && docType !== "RJ" && (
@@ -469,6 +488,13 @@ export function Wizard({ docType }: { docType: DocType }) {
               </p>
             )}
             {dl.error && <p className="mt-3 text-sm text-red-600">{dl.error}</p>}
+            {dlWarn.length > 0 && (
+              <ul className="mt-3 list-disc space-y-1 rounded-md bg-[var(--warn-bg)] p-3 pl-7 text-sm text-[var(--warn-ink)]">
+                {dlWarn.map((c) => (
+                  <li key={c}>{warningText(c)}</li>
+                ))}
+              </ul>
+            )}
             {docType === "RJ" && sources[0] && (
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button className="btn btn-sm" onClick={saveJournalToLibrary}>
@@ -481,6 +507,8 @@ export function Wizard({ docType }: { docType: DocType }) {
               Ini draf. Tinjau setiap bagian sebelum dikumpulkan. Penanda seperti [S1] otomatis menjadi sitasi dan daftar pustaka di file Word. Bagian bertanda kuning perlu pengecekan Anda.
             </p>
           </div>
+
+          {previewDoc && <PreviewPane doc={previewDoc} formatLabel={tplRec ? `template ${tplRec.name}` : "bawaan NAKESA"} onClose={() => setShowPreview(false)} />}
 
           {sections.map((s) => {
             const title = resolveTitle(s, effectiveInput);

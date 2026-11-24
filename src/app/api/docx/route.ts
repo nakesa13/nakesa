@@ -1,4 +1,5 @@
 import { buildDocx } from "@/lib/docx-builder";
+import { inspectDocx } from "@/lib/docx-check";
 import { buildDocxFromTemplate } from "@/lib/template/build";
 import { parseMapping } from "@/lib/template/mapping";
 import { MAX_TEMPLATE_BYTES } from "@/lib/template/package";
@@ -65,13 +66,23 @@ export async function POST(req: Request) {
 
   try {
     const input = { coverTitle: tpl.coverTitle, judul, identity, sections, sources, style, chapterStyle: tpl.chapterStyle };
-    const { buffer } = template && mapping ? await buildDocxFromTemplate(input, template, mapping) : await buildDocx(input);
+    const built = template && mapping ? await buildDocxFromTemplate(input, template, mapping) : await buildDocx(input);
+    const { buffer } = built;
+    // T12: periksa struktur sebelum dikirim. File rusak, atau sitasi tanpa entri daftar pustaka, tidak boleh sampai ke pengguna.
+    const report = inspectDocx(buffer, { cited: sources.filter((s) => built.citedIds.includes(s.id)) });
+    if (!report.ok) {
+      console.error("docx tidak lolos pemeriksaan:", report.problems.map((p) => p.code).join(","));
+      const first = report.problems.find((p) => p.level === "error");
+      return Response.json({ error: `File Word hasil tidak lolos pemeriksaan: ${first?.message ?? "struktur tidak valid."} Coba lagi; bila berulang, laporkan agar diperbaiki.` }, { status: 500 });
+    }
+    const warnings = report.problems.filter((p) => p.level === "warning").map((p) => p.code);
     const fileName = (judul.replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "").slice(0, 60) || tpl.short) + ".docx";
     return new Response(new Uint8Array(buffer), {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "Content-Disposition": `attachment; filename="${tpl.short}.docx"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
         "Cache-Control": "no-store",
+        ...(warnings.length ? { "X-Nakesa-Warnings": warnings.join(",") } : {}),
       },
     });
   } catch (e) {

@@ -539,5 +539,5 @@ export async function buildDocxFromTemplate(b: BuildInput, template: Uint8Array,
   }
   if (!out.file("word/document.xml") || !out.file("[Content_Types].xml")) throw new TemplateError("Gagal menyusun file Word hasil. Coba simpan ulang template dari Word sebagai .docx.");
   const buffer = out.generate({ type: "nodebuffer", compression: "DEFLATE" }) as Buffer;
-  return { buffer, citedCount: order.length };
+  return { buffer, citedCount: order.length, citedIds: order };
 }

@@ -1,11 +1,11 @@
+import PizZip from "pizzip";
 import { describe, expect, it } from "vitest";
-import { buildDocx } from "../docx-builder";
+import { buildDocx, type BuildInput } from "../docx-builder";
+import { inspectDocx } from "../docx-check";
 import { renderDataSection } from "../case";
 import type { DocSection, Source } from "../types";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+
+// T12: isi .docx diperiksa lewat inspectDocx (pizzip + xmldom), tidak lagi bergantung pada pandoc.
 
 const sources: Source[] = [
   {
@@ -31,33 +31,87 @@ const sections: DocSection[] = [
   { id: "b", title: "A. Data Objektif", level: 2, kind: "data", text: renderDataSection("LK", "objektif", { td: "110/70 mmHg" }) },
 ];
 
+const base: BuildInput = {
+  coverTitle: "LAPORAN KASUS",
+  judul: "Asuhan Kebidanan Ny. S",
+  identity: { nama: "Mahasiswa Uji", nim: "123", prodi: "D3 Kebidanan", kampus: "Kampus Uji", pembimbing: "", tahun: "2026" },
+  sections,
+  sources,
+  style: "APA",
+  chapterStyle: "center",
+};
+
+const errors = (r: ReturnType<typeof inspectDocx>) => r.problems.filter((p) => p.level === "error");
+const xmlOf = (buf: Buffer, part: string) => new PizZip(buf).file(part)?.asText() ?? "";
+
 describe("builder docx", () => {
-  it("menghasilkan file .docx valid dengan sitasi dan daftar pustaka", async () => {
-    const { buffer, citedCount } = await buildDocx({
-      coverTitle: "LAPORAN KASUS",
-      judul: "Asuhan Kebidanan Ny. S",
-      identity: { nama: "Mahasiswa Uji", nim: "123", prodi: "D3 Kebidanan", kampus: "Kampus Uji", pembimbing: "", tahun: "2026" },
-      sections,
-      sources,
-      style: "APA",
-      chapterStyle: "center",
-    });
+  it("menghasilkan .docx valid: sitasi di teks, daftar pustaka, tanpa penanda mentah", async () => {
+    const { buffer, citedCount, citedIds } = await buildDocx(base);
     expect(citedCount).toBe(1);
+    expect(citedIds).toEqual(["S1"]);
     expect(buffer.subarray(0, 2).toString()).toBe("PK");
 
-    const dir = mkdtempSync(path.join(tmpdir(), "nakesa-"));
-    const f = path.join(dir, "t.docx");
-    writeFileSync(f, buffer);
-    let md = "";
-    try {
-      md = execFileSync("pandoc", ["-t", "plain", f], { encoding: "utf8" });
-    } catch {
-      return; // pandoc tidak terpasang: lewati pemeriksaan isi
+    const r = inspectDocx(buffer, { cited: sources });
+    expect(errors(r)).toEqual([]);
+    expect(r.ok).toBe(true);
+    const text = r.paragraphs.join("\n");
+    expect(text).toContain("(Rahma & Putri, 2022)");
+    expect(text).toContain("DAFTAR PUSTAKA");
+    expect(text).toContain("https://doi.org/10.1234/jk.2022.10");
+    expect(text).not.toContain("[S1]");
+    expect(text).toContain("110/70 mmHg");
+  });
+
+  it("Vancouver: sitasi bernomor di teks dan daftar pustaka bernomor", async () => {
+    const { buffer } = await buildDocx({ ...base, style: "Vancouver" });
+    const r = inspectDocx(buffer, { cited: sources });
+    expect(r.ok).toBe(true);
+    const text = r.paragraphs.join("\n");
+    expect(text).toContain("kehamilan [1].");
+    expect(text).toContain("Rahma S, Putri D"); // inisial gaya Vancouver
+    expect(text).not.toContain("[S1]");
+  });
+
+  it("struktur: judul bab/subbab memakai gaya Heading, A4, dan ada nomor halaman", async () => {
+    const { buffer } = await buildDocx(base);
+    const doc = xmlOf(buffer, "word/document.xml");
+    expect((doc.match(/w:pStyle w:val="Heading1"/g) ?? []).length).toBeGreaterThanOrEqual(3); // 2 bab + daftar pustaka
+    expect((doc.match(/w:pStyle w:val="Heading2"/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(doc).toContain('w:w="11906"');
+    expect(doc).toContain('w:h="16838"');
+    expect(Object.keys(new PizZip(buffer).files).some((f) => /^word\/footer\d*\.xml$/.test(f))).toBe(true);
+  });
+
+  it("tanpa sitasi: tidak ada daftar pustaka", async () => {
+    const { buffer, citedCount } = await buildDocx({ ...base, sections: sections.map((s) => ({ ...s, text: s.text.replace("[S1]", "") })) });
+    expect(citedCount).toBe(0);
+    const r = inspectDocx(buffer);
+    expect(r.ok).toBe(true);
+    expect(r.paragraphs.join("\n")).not.toContain("DAFTAR PUSTAKA");
+  });
+
+  it("penanda yang tidak dikenal dibuang, tidak menjadi sitasi atau entri pustaka", async () => {
+    const { buffer, citedIds } = await buildDocx({ ...base, sections: [{ id: "a", title: "A", level: 2, kind: "ai", text: "Klaim tanpa sumber [S9]." }] });
+    expect(citedIds).toEqual([]);
+    const text = inspectDocx(buffer).paragraphs.join("\n");
+    expect(text).toContain("Klaim tanpa sumber.");
+    expect(text).not.toContain("S9");
+  });
+
+  it("karakter kontrol dari hasil tempel PDF dibuang: XML tetap sah di Word", async () => {
+    const bad = "Teks\u000Cdari\u0002PDF\u0008ini";
+    const { buffer } = await buildDocx({
+      ...base,
+      judul: `Judul ${bad}`,
+      identity: { ...base.identity, nama: `Siti${bad}` },
+      sections: [{ id: "a", title: `Bagian ${bad}`, level: 2, kind: "ai", text: `${bad} [S1].` }],
+    });
+    const r = inspectDocx(buffer, { cited: sources });
+    expect(errors(r)).toEqual([]);
+    expect(r.paragraphs.join("\n")).toContain("Teks dari PDF ini");
+    for (const part of ["word/document.xml", "docProps/core.xml"]) {
+      // eslint-disable-next-line no-control-regex
+      expect(xmlOf(buffer, part), part).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/);
     }
-    expect(md).toContain("(Rahma & Putri, 2022)");
-    expect(md).toContain("DAFTAR PUSTAKA");
-    expect(md).toContain("https://doi.org/10.1234/jk.2022.10");
-    expect(md).not.toContain("[S1]");
-    expect(md).toContain("110/70 mmHg");
   });
 });

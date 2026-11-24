@@ -52,7 +52,7 @@ export async function apiUpload<T>(url: string, file: File, accessCode: string):
   return (await res.json()) as T;
 }
 
-export async function apiDocx(body: unknown, accessCode: string, template?: { data: ArrayBuffer; mapping: unknown }): Promise<Blob> {
+export async function apiDocx(body: unknown, accessCode: string, template?: { data: ArrayBuffer; mapping: unknown }, onWarnings?: (codes: string[]) => void): Promise<Blob> {
   let res: Response;
   if (template) {
     const form = new FormData();
@@ -64,6 +64,8 @@ export async function apiDocx(body: unknown, accessCode: string, template?: { da
     res = await fetch("/api/docx", { method: "POST", headers: headers(accessCode, true), body: JSON.stringify(body) });
   }
   if (!res.ok) return fail(res);
+  const warn = res.headers.get("x-nakesa-warnings");
+  if (warn && onWarnings) onWarnings(warn.split(",").filter(Boolean));
   return res.blob();
 }
 

@@ -18,6 +18,7 @@ import {
 import type { CiteStyle, DocSection, Identity, Source } from "./types";
 import { buildBibliography, citedOrder, renderInText, type Seg } from "./citations";
 import { parseBlocks, parseInline } from "./markup";
+import { xmlSafe } from "./template/xml";
 
 const FONT = "Times New Roman";
 const SIZE = 24; // 12 pt
@@ -43,12 +44,15 @@ export interface BuildInput {
 export interface BuildResult {
   buffer: Buffer;
   citedCount: number;
+  /** T12: id sumber yang dikutip dan masuk daftar pustaka (urutan kemunculan). Dipakai pemeriksa .docx. */
+  citedIds: string[];
 }
 
 const NUMBERED_REF = "nakesa-numbered";
 
 function run(text: string, opts: { bold?: boolean; italics?: boolean; size?: number } = {}): TextRun {
-  return new TextRun({ text, font: FONT, size: opts.size ?? SIZE, bold: opts.bold, italics: opts.italics });
+  // T12: karakter kontrol dari hasil tempel (PDF) membuat XML tidak sah dan Word menolak file; buang di satu tempat ini.
+  return new TextRun({ text: xmlSafe(text), font: FONT, size: opts.size ?? SIZE, bold: opts.bold, italics: opts.italics });
 }
 
 function inlineRuns(text: string, base: { bold?: boolean; size?: number } = {}): TextRun[] {
@@ -247,7 +251,7 @@ export async function buildDocx(b: BuildInput): Promise<BuildResult> {
 
   const doc = new Document({
     creator: "NAKESA",
-    title: b.judul,
+    title: xmlSafe(b.judul),
     styles: {
       default: {
         document: { run: { font: FONT, size: SIZE } },
@@ -312,5 +316,5 @@ export async function buildDocx(b: BuildInput): Promise<BuildResult> {
     ],
   });
 
-  return { buffer: await Packer.toBuffer(doc), citedCount: order.length };
+  return { buffer: await Packer.toBuffer(doc), citedCount: order.length, citedIds: order };
 }
