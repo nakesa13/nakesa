@@ -1,5 +1,6 @@
 import { lookupDoi } from "@/lib/crossref";
 import { guard } from "@/lib/guard";
+import { stampChecks } from "@/lib/refs";
 
 export async function POST(req: Request) {
   const blocked = guard(req, 60);
@@ -14,7 +15,8 @@ export async function POST(req: Request) {
   }
 
   try {
-    return Response.json({ source: await lookupDoi(doi) });
+    // T13: metadata (dan abstrak) dicatat sebagai keadaan yang diverifikasi; bila diubah kemudian, status turun.
+    return Response.json({ source: stampChecks(await lookupDoi(doi)) });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Gagal mengambil data DOI.";
     return Response.json({ error: msg }, { status: 422 });

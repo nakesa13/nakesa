@@ -4,6 +4,7 @@ import type { Provenance, Source } from "@/lib/types";
 import { authorsToText, findDoi, parseAuthors } from "@/lib/citations";
 import { apiPost, apiUpload } from "@/lib/client";
 import { doiContentCheck } from "@/lib/provenance";
+import { findDuplicateOf, findDuplicates, nextSourceId, reconcileEdit, sourceStatus, stampChecks, type SourceLevel } from "@/lib/refs";
 import { Icon } from "./Icon";
 
 type Draft = Omit<Source, "id">;
@@ -22,6 +23,14 @@ function Field({ label, className, help, children }: { label: string; className?
 }
 
 const TYPE_LABEL: Record<Source["type"], string> = { jurnal: "Jurnal", buku: "Buku", pedoman: "Pedoman", web: "Situs web" };
+
+const LEVEL_BADGE: Record<SourceLevel, string> = {
+  "perlu-tinjau": "badge-bad",
+  manual: "badge-warn",
+  metadata: "badge-ok",
+  isi: "badge-warn",
+  terverifikasi: "badge-ok",
+};
 
 /** Respons /api/extract-source dan /api/import-url. */
 interface Extracted {
@@ -42,10 +51,8 @@ function hostOf(u?: string): string {
   }
 }
 
-export function nextSourceId(list: { id: string }[]): string {
-  const max = list.reduce((m, s) => Math.max(m, Number(s.id.replace(/\D/g, "")) || 0), 0);
-  return `S${max + 1}`;
-}
+// Nomor sumber dihitung di lib/refs (nomor yang masih tertulis di teks tidak dipakai ulang); diekspor ulang untuk pemakai lama.
+export { nextSourceId };
 
 function SourceForm({
   initial,
@@ -75,12 +82,7 @@ function SourceForm({
     if (!title.trim()) return setErr("Judul wajib diisi.");
     if (!year.trim()) return setErr("Tahun wajib diisi.");
     const parsed = parseAuthors(authors);
-    // Metadata Crossref yang diubah tangan tidak lagi dianggap terverifikasi.
-    const changed =
-      !!initial &&
-      initial.verified &&
-      (initial.title !== title.trim() || initial.year !== year.trim() || authorsToText(initial.authors) !== authorsToText(parsed) || (initial.doi ?? "") !== doi.trim());
-    onSave({
+    const next: Draft = {
       type,
       title: title.trim(),
       authors: parsed,
@@ -94,10 +96,12 @@ function SourceForm({
       doi: doi.trim() || undefined,
       url: url.trim() || undefined,
       content: content.trim() || undefined,
-      origin: changed ? "manual" : (initial?.origin ?? "manual"),
-      verified: changed ? false : (initial?.verified ?? false),
+      origin: initial?.origin ?? "manual",
+      verified: initial?.verified ?? false,
       provenance: initial?.provenance,
-    });
+    };
+    // T13: metadata yang pernah diverifikasi lalu diubah turun menjadi isian manual; isi yang diubah membuang hasil cek DOI.
+    onSave(reconcileEdit(initial, next));
   };
 
   return (
@@ -180,12 +184,18 @@ export function SourceManager({
   accessCode,
   library,
   onSaveLibrary,
+  citedIds,
+  reservedIds,
 }: {
   sources: Source[];
   onChange: (s: Source[]) => void;
   accessCode: string;
   library?: Source[];
   onSaveLibrary?: (s: Source) => void;
+  /** T13: id sumber yang dirujuk di teks. Bila diberikan, sumber di luar himpunan ini ditandai "Belum dirujuk". */
+  citedIds?: ReadonlySet<string>;
+  /** T13: nomor sumber yang masih tertulis sebagai penanda di teks; tidak dipakai untuk sumber baru. */
+  reservedIds?: string[];
 }) {
   const [doi, setDoi] = useState("");
   const [busy, setBusy] = useState(false);
@@ -200,7 +210,17 @@ export function SourceManager({
   const fileId = useId();
   const urlId = useId();
 
-  const addDraft = (d: Draft) => onChange([...sources, { ...d, id: nextSourceId(sources) }]);
+  /** Menambah sumber. DOI yang sama ditolak; judul+tahun+penulis yang sama ditanyakan dulu. Mengembalikan true bila ditambahkan. */
+  const addDraft = (d: Draft): boolean => {
+    const dup = findDuplicateOf(sources, d);
+    if (dup?.by === "doi") {
+      setMsg({ kind: "err", text: `DOI sumber ini sudah ada di daftar sebagai [${dup.id}].` });
+      return false;
+    }
+    if (dup && !window.confirm(`Sumber dengan judul, tahun, dan penulis pertama yang sama sudah ada ([${dup.id}]). Tetap tambahkan?`)) return false;
+    onChange([...sources, { ...d, id: nextSourceId(sources, reservedIds) }]);
+    return true;
+  };
 
   /** Hasil baca file atau URL: cari DOI, ambil metadata Crossref, lalu PERIKSA apakah judulnya cocok dengan isi sebelum dipasang. */
   const handleExtracted = async (r: Extracted) => {
@@ -208,8 +228,9 @@ export function SourceManager({
     const fromUrl = r.provenance?.method === "url";
     const found = r.doi ?? findDoi(content);
     const base: Provenance | undefined = r.provenance ? { ...r.provenance, doiInText: found ?? undefined } : undefined;
-    if (found && sources.some((s) => s.doi && s.doi.toLowerCase() === found.toLowerCase())) {
-      setMsg({ kind: "err", text: `DOI ${found} di sumber ini sudah ada di daftar sumber.` });
+    const dup = found ? findDuplicateOf(sources, { doi: found, title: "", year: "", authors: [] }) : null;
+    if (dup?.by === "doi") {
+      setMsg({ kind: "err", text: `DOI ${found} di sumber ini sudah ada di daftar sumber sebagai [${dup.id}].` });
       return;
     }
     let meta: Draft | null = null;
@@ -225,19 +246,20 @@ export function SourceManager({
       const check = doiContentCheck(meta.title, content);
       const prov = base ? { ...base, doiCheck: check } : undefined;
       if (check === "cocok") {
-        addDraft({ ...meta, content, provenance: prov });
-        setMsg({ kind: "ok", text: `DOI ${found} terdeteksi dan judul dari Crossref cocok dengan isi: metadata terverifikasi, isi tersimpan sebagai isi sumber.` });
+        if (addDraft(stampChecks<Draft>({ ...meta, content, provenance: prov }))) {
+          setMsg({ kind: "ok", text: `DOI ${found} terdeteksi dan judul dari Crossref cocok dengan isi: metadata terverifikasi, isi tersimpan sebagai isi sumber.` });
+        }
         return;
       }
       setAdding(false);
       if (check === "tidak-cocok") {
-        setPrefill({ type: fromUrl ? "web" : "jurnal", title: "", authors: [], year: "", url: r.provenance?.finalUrl, origin: "manual", verified: false, content, provenance: prov });
+        setPrefill(stampChecks<Draft>({ type: fromUrl ? "web" : "jurnal", title: "", authors: [], year: "", url: r.provenance?.finalUrl, origin: "manual", verified: false, content, provenance: prov }));
         setMsg({
           kind: "err",
           text: `DOI ${found} ada di isi, tetapi judul Crossref ("${meta.title.slice(0, 120)}") tidak muncul di bagian awal isi. Mungkin itu DOI artikel lain yang dikutip. Metadata TIDAK dipasang otomatis: isi metadata yang benar di bawah.`,
         });
       } else {
-        setPrefill({ ...meta, origin: "manual", verified: false, content, provenance: prov });
+        setPrefill(stampChecks<Draft>({ ...meta, origin: "manual", verified: false, content, provenance: prov }));
         setMsg({
           kind: "err",
           text: `DOI ${found} ditemukan, tetapi kecocokannya dengan isi belum bisa dipastikan. Metadata Crossref diisikan sebagai usulan dan belum berstatus terverifikasi: periksa terhadap isi, lalu simpan.`,
@@ -246,7 +268,7 @@ export function SourceManager({
       return;
     }
     setAdding(false);
-    setPrefill({ type: fromUrl ? "web" : "jurnal", title: r.title ?? "", authors: [], year: "", url: r.provenance?.finalUrl, origin: "manual", verified: false, content, provenance: base });
+    setPrefill(stampChecks<Draft>({ type: fromUrl ? "web" : "jurnal", title: r.title ?? "", authors: [], year: "", url: r.provenance?.finalUrl, origin: "manual", verified: false, content, provenance: base }));
     setMsg({
       kind: "ok",
       text: `Teks terbaca (${r.chars.toLocaleString("id-ID")} karakter${r.truncated ? ", hanya 60.000 karakter pertama dipakai" : ""}). ${found ? "DOI di sumber ini tidak dapat diverifikasi." : "DOI tidak ditemukan."} Lengkapi metadata di bawah, lalu simpan.`,
@@ -285,10 +307,7 @@ export function SourceManager({
     setMsg(null);
     try {
       const { source } = await apiPost<{ source: Draft }>("/api/doi", { doi }, accessCode);
-      if (sources.some((s) => s.doi && s.doi.toLowerCase() === source.doi?.toLowerCase())) {
-        setMsg({ kind: "err", text: "DOI ini sudah ada di daftar." });
-      } else {
-        addDraft(source);
+      if (addDraft(source)) {
         setDoi("");
         setMsg({
           kind: "ok",
@@ -304,7 +323,8 @@ export function SourceManager({
     }
   };
 
-  const importable = (library ?? []).filter((l) => !sources.some((s) => (s.doi && s.doi === l.doi) || s.title === l.title));
+  const importable = (library ?? []).filter((l) => !findDuplicateOf(sources, l));
+  const dups = findDuplicates(sources);
 
   return (
     <div className="space-y-4">
@@ -371,9 +391,10 @@ export function SourceManager({
               key="prefill"
               initial={prefill}
               onSave={(d) => {
-                addDraft(d);
-                setPrefill(null);
-                setMsg(null);
+                if (addDraft(d)) {
+                  setPrefill(null);
+                  setMsg(null);
+                }
               }}
               onCancel={() => setPrefill(null)}
             />
@@ -410,8 +431,7 @@ export function SourceManager({
           <div className="mt-3">
             <SourceForm
               onSave={(d) => {
-                addDraft(d);
-                setAdding(false);
+                if (addDraft(d)) setAdding(false);
               }}
               onCancel={() => setAdding(false)}
             />
@@ -419,12 +439,19 @@ export function SourceManager({
         )}
       </div>
 
+      {dups.length > 0 && (
+        <p className="rounded-md bg-[var(--warn-bg)] p-3 text-sm text-[var(--warn-ink)]">
+          Kemungkinan sumber ganda:{" "}
+          {dups.map((g) => `${g.ids.map((id) => `[${id}]`).join(" dan ")} (${g.by === "doi" ? "DOI sama" : "judul, tahun, dan penulis pertama sama"})`).join("; ")}. Hapus salah satunya bila memang sumber yang sama.
+        </p>
+      )}
+
       {sources.length === 0 ? (
         <p className="text-sm text-muted">Belum ada sumber.</p>
       ) : (
         <ul className="space-y-2">
           {sources.map((s) => {
-            const usable = (s.content ?? "").length >= 200;
+            const st = sourceStatus(s);
             return (
               <li key={s.id} className="card p-3">
                 {editing === s.id ? (
@@ -448,11 +475,18 @@ export function SourceManager({
                         {s.journal ? ` · ${s.journal}` : ""}
                       </p>
                       <div className="mt-1.5 flex flex-wrap gap-1.5">
-                        {s.verified ? <span className="badge badge-ok">Terverifikasi Crossref</span> : <span className="badge badge-warn">Isian manual</span>}
-                        {usable ? <span className="badge badge-ok">Isi tersedia</span> : <span className="badge badge-mute">Tanpa isi: tidak dikutip AI</span>}
-                        {s.provenance?.doiCheck === "tidak-cocok" && <span className="badge badge-warn">DOI tidak cocok dengan isi</span>}
-                        {s.provenance?.doiCheck === "tidak-dapat-dinilai" && <span className="badge badge-mute">Kecocokan DOI belum pasti</span>}
+                        <span className={`badge ${LEVEL_BADGE[st.level]}`}>{st.label}</span>
+                        {citedIds && !citedIds.has(s.id) && <span className="badge badge-mute">Belum dirujuk di teks</span>}
                       </div>
+                      {st.reasons.filter((r) => !r.startsWith("Tanpa isi")).length > 0 && (
+                        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-muted">
+                          {st.reasons
+                            .filter((r) => !r.startsWith("Tanpa isi"))
+                            .map((r) => (
+                              <li key={r}>{r}</li>
+                            ))}
+                        </ul>
+                      )}
                       {s.provenance && s.provenance.method !== "doi" && (
                         <p className="mt-1 text-xs text-muted">
                           {s.provenance.method === "url" ? `Diambil dari ${hostOf(s.provenance.finalUrl ?? s.provenance.url)}` : `File: ${s.provenance.fileName ?? "tanpa nama"}`} · {s.provenance.fetchedAt.slice(0, 10)}

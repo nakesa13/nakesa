@@ -68,5 +68,10 @@ export function parseProvenance(v: unknown): Provenance | undefined {
   const doiInText = str("doiInText", 200);
   if (doiInText) out.doiInText = doiInText;
   if (typeof p.doiCheck === "string" && DOI_CHECKS.includes(p.doiCheck as DoiCheck)) out.doiCheck = p.doiCheck as DoiCheck;
+  // T13: sidik jari perubahan, hanya bentuk heksadesimal pendek yang dikenal.
+  for (const k of ["metaFp", "contentFp"] as const) {
+    const fp = str(k, 17); // 17: nilai yang lebih panjang dari 16 gagal di regex, tidak terpotong diam-diam
+    if (fp && /^[0-9a-f]{8,16}$/.test(fp)) out[k] = fp;
+  }
   return out;
 }

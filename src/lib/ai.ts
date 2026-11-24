@@ -5,6 +5,7 @@ import { TEMPLATES, resolveTitle } from "@/templates";
 import { caseBlock } from "./case";
 import { sanitizeMarkers } from "./citations";
 import { journalPromptLines } from "./journal";
+import { sourceStatus } from "./refs";
 
 export type Provider = "anthropic" | "groq";
 
@@ -79,10 +80,14 @@ export function buildSourceBlock(docType: DocType, sources: Source[]): { block: 
   for (const s of sources) {
     const room = Math.max(0, Math.min(per, total - used));
     const content = (s.content ?? "").trim().slice(0, room);
-    if (content.length >= 200) {
+    // T13: sumber yang DOI-nya tidak cocok dengan isinya tidak dikutip walau isinya ada: daftar pustaka akan menunjuk artikel lain.
+    const st = sourceStatus(s);
+    if (content.length >= 200 && st.citable) {
       used += content.length;
       usable.push(s.id);
       parts.push(`[${s.id}] ${srcLabel(s)} — ISI TERSEDIA\n<isi_sumber id="${s.id}">\n${content}\n</isi_sumber>`);
+    } else if (st.level === "perlu-tinjau") {
+      parts.push(`[${s.id}] ${srcLabel(s)} — PERLU DITINJAU MAHASISWA (jangan diberi penanda)`);
     } else {
       parts.push(`[${s.id}] ${srcLabel(s)} — ISI TIDAK TERSEDIA (jangan diberi penanda)`);
     }

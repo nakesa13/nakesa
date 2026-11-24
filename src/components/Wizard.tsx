@@ -24,6 +24,8 @@ import { PreviewPane } from "./PreviewPane";
 import { buildPreview } from "@/lib/preview";
 import { documentTitle, identityPayload, sectionPayload } from "@/lib/export";
 import { warningText } from "@/lib/docx-warnings";
+import { extractMarkerIds } from "@/lib/citations";
+import { analyzeReferences, findDuplicateOf, isCitable } from "@/lib/refs";
 
 const EMPTY_LIB: Source[] = [];
 
@@ -129,7 +131,12 @@ export function Wizard({ docType }: { docType: DocType }) {
 
   const aiSections = sections.filter((s) => s.kind === "ai");
   // Tanpa sumber berisi, AI memang tidak boleh mengutip: peringatan "belum ada rujukan" per bagian hanya noise, cukup satu pesan di atas.
-  const hasUsableSource = sources.some((s) => (s.content ?? "").trim().length >= 200);
+  const hasUsableSource = sources.some(isCitable);
+  // T13: rujukan di teks dibandingkan dengan daftar sumber (LP/LK): penanda tanpa sumber, sumber yang tidak dirujuk.
+  const refAnalysis = useMemo(() => (docType === "RJ" ? null : analyzeReferences(Object.values(draft.texts), draft.sources)), [docType, draft.texts, draft.sources]);
+  const citedIds = useMemo(() => new Set(refAnalysis?.cited ?? []), [refAnalysis]);
+  const reservedIds = useMemo(() => Object.values(draft.texts).flatMap(extractMarkerIds), [draft.texts]);
+  const anyText = Object.values(draft.texts).some((t) => t.trim());
   const warnings = useMemo(() => {
     const out: Record<string, SectionWarnings> = {};
     for (const s of sections) {
@@ -248,7 +255,7 @@ export function Wizard({ docType }: { docType: DocType }) {
   const saveJournalToLibrary = () => {
     const j = sources[0];
     if (!j) return;
-    if (library.some((l) => (j.doi && l.doi === j.doi) || l.title === j.title)) {
+    if (findDuplicateOf(library, j)) {
       setLibMsg("Jurnal ini sudah ada di Pustaka Saya.");
       return;
     }
@@ -431,9 +438,24 @@ export function Wizard({ docType }: { docType: DocType }) {
             <p className="mt-1 text-sm text-muted">
               Tambahkan buku, pedoman, atau jurnal yang akan dijadikan rujukan. AI hanya boleh merujuk sumber yang <b>isinya</b> Anda lampirkan, dan daftar pustaka disusun otomatis dari sumber yang benar-benar dikutip.
             </p>
-            {sources.filter((s) => (s.content ?? "").length >= 200).length === 0 && (
+            {!sources.some(isCitable) && (
               <p className="mt-3 rounded-md bg-[var(--warn-bg)] p-3 text-sm text-[var(--warn-ink)]">
                 Belum ada sumber berisi. Dokumen tetap bisa dibuat, tetapi tanpa rujukan otomatis dan bagian teori akan diberi peringatan &quot;belum ada rujukan&quot;.
+              </p>
+            )}
+            {refAnalysis && refAnalysis.dangling.length > 0 && (
+              <p className="mt-3 rounded-md bg-[var(--warn-bg)] p-3 text-sm text-[var(--warn-ink)]">
+                Teks masih memuat penanda {refAnalysis.dangling.map((id) => `[${id}]`).join(", ")} yang tidak punya sumber di daftar ini (sumbernya sudah dihapus, atau penandanya karangan). Penanda itu tidak menjadi sitasi di file Word; hapus atau ganti di langkah Hasil.
+              </p>
+            )}
+            {refAnalysis && refAnalysis.citedNotCitable.length > 0 && (
+              <p className="mt-3 rounded-md bg-[var(--warn-bg)] p-3 text-sm text-[var(--warn-ink)]">
+                Sumber {refAnalysis.citedNotCitable.map((id) => `[${id}]`).join(", ")} dirujuk di teks padahal tidak boleh dikutip AI (tanpa isi, atau DOI-nya perlu ditinjau). Periksa kalimat yang merujuknya.
+              </p>
+            )}
+            {refAnalysis && anyText && refAnalysis.uncited.length > 0 && (
+              <p className="mt-3 text-xs text-muted">
+                {refAnalysis.uncited.length} sumber belum dirujuk di teks ({refAnalysis.uncited.map((id) => `[${id}]`).join(", ")}) dan tidak akan masuk daftar pustaka.
               </p>
             )}
           </div>
@@ -442,11 +464,13 @@ export function Wizard({ docType }: { docType: DocType }) {
             onChange={(s) => setDraft((d) => ({ ...d, sources: s }))}
             accessCode={settings.accessCode}
             library={library}
+            citedIds={anyText ? citedIds : undefined}
+            reservedIds={reservedIds}
             onSaveLibrary={(s) => {
               const { id: _id, ...rest } = s;
               void _id;
-              if (library.some((l) => (rest.doi && l.doi === rest.doi) || l.title === rest.title)) return;
-              setLibrary((l) => [...l, { ...rest, id: `S${l.length + 1}` }]);
+              if (findDuplicateOf(library, rest)) return;
+              setLibrary((l) => [...l, { ...rest, id: nextSourceId(l) }]);
             }}
           />
         </section>

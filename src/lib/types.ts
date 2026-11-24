@@ -28,6 +28,12 @@ export interface Provenance {
   /** DOI yang ditemukan di dalam isi, bila ada. */
   doiInText?: string;
   doiCheck?: DoiCheck;
+  /**
+   * T13: sidik jari (pendeteksi perubahan, bukan keamanan) metadata dan isi pada saat terakhir diverifikasi atau
+   * diperiksa kecocokannya. Bila nilai sekarang berbeda, verifikasi/pemeriksaan itu tidak berlaku lagi dan status turun.
+   */
+  metaFp?: string;
+  contentFp?: string;
 }
 
 export interface Source {
