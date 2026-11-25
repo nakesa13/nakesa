@@ -2,8 +2,9 @@ import PizZip from "pizzip";
 import type { BuildInput, BuildResult } from "../docx-builder";
 import { buildBibliography, citedOrder, renderInText } from "../citations";
 import { parseBlocks, parseInline } from "../markup";
-import { describeBlocks, summarize } from "./analyze";
+import { describeBlocks, lostElements, sectionBreaksIn, summarize } from "./analyze";
 import { type Pkg, openPackage, sectPrOf } from "./package";
+import type { CiteStyle } from "../types";
 import type { CoverField, Mapping } from "./types";
 import { TemplateError, attr, child, childrenNamed, descendants, elems, lname, mk, parseXml, removeChildren, serialize, setPprChild, textOf, textRun, xmlSafe } from "./xml";
 
@@ -355,6 +356,10 @@ export async function buildDocxFromTemplate(b: BuildInput, template: Uint8Array,
   const bibHeading = mapping.bibHeading !== null && mapping.bibHeading !== undefined && mapping.bibHeading > bodyStart && mapping.bibHeading < limit ? mapping.bibHeading : null;
   const bodyEnd = bibHeading ?? limit;
   const bibEnd = bibHeading !== null && mapping.bibEnd !== null && mapping.bibEnd !== undefined && mapping.bibEnd > bibHeading && mapping.bibEnd < limit ? mapping.bibEnd : limit;
+  // T12: gaya sitasi dari template (terdeteksi atau dikoreksi pengguna) menggantikan Pengaturan; sitasi di isi dan daftar pustaka memakai gaya yang sama.
+  const style: CiteStyle = mapping.citeStyle ?? b.style;
+  // Kode peringatan (teks ada di docx-warnings.ts) untuk hal yang tidak bisa dipertahankan dari template.
+  const warnings: string[] = [];
 
   // 1) contoh format (sebelum ada yang dihapus)
   const sBody = capture(pkg, mapping.samples.body);
@@ -435,7 +440,7 @@ export async function buildDocxFromTemplate(b: BuildInput, template: Uint8Array,
     headings.push({ title: h.text, level: s.level });
     content.push(h.el);
     if (s.kind === "heading") continue;
-    content.push(...bodyElems(ctx, renderInText(s.text, sourceMap, b.style, numbers), listState));
+    content.push(...bodyElems(ctx, renderInText(s.text, sourceMap, style, numbers), listState));
   }
 
   // 4) daftar isi
@@ -479,7 +484,11 @@ export async function buildDocxFromTemplate(b: BuildInput, template: Uint8Array,
     tocUsed = true;
   }
 
-  // 5) ganti isi
+  // 5) ganti isi. Elemen yang tidak bisa dipertahankan di area yang diganti dilaporkan, tidak dibuang diam-diam.
+  const bodyRange = els.slice(bodyStart, bodyEnd);
+  const bibRange = bibHeading !== null ? els.slice(bibHeading + 1, bibEnd) : [];
+  if (lostElements(bodyRange).length || lostElements(bibRange).length) warnings.push("template-elemen-dibuang");
+  if (sectionBreaksIn(bodyRange) > 1 || sectionBreaksIn(bibRange) > 1) warnings.push("template-bagian-digabung");
   const bodySect = removeRange(pkg, bodyStart, bodyEnd);
   const bodyRef: Node | null = bibHeading !== null ? els[bibHeading] : finalSect;
   const place = (e: Element) => pkg.body.insertBefore(e, bodyRef);
@@ -488,7 +497,7 @@ export async function buildDocxFromTemplate(b: BuildInput, template: Uint8Array,
   if (bodySect) place(sectParagraph(doc, bodySect));
 
   // 6) daftar pustaka
-  const entries = order.length ? buildBibliography(order, sourceMap, b.style) : [];
+  const entries = order.length ? buildBibliography(order, sourceMap, style) : [];
   const entryElems = entries.map((e) => {
     let pPr: Element;
     if (bibSample?.pPr) {
@@ -511,7 +520,11 @@ export async function buildDocxFromTemplate(b: BuildInput, template: Uint8Array,
     const heading = els[bibHeading];
     const ref: Node | null = bibEnd < limit ? els[bibEnd] : finalSect;
     if (!entries.length) {
-      heading.parentNode?.removeChild(heading);
+      // Tidak ada sumber yang dikutip: judul tetap di posisinya dan ditandai "perlu diisi". Entri tidak pernah dikarang.
+      const pPr = ctx.bodyPPr ? clone(ctx.bodyPPr) : mk(doc, "pPr");
+      removeChildren(pPr, ["ind"]);
+      pkg.body.insertBefore(para(doc, pPr, [textRun(doc, "[Perlu diisi: belum ada sumber dari Reference Manager yang dikutip di dokumen ini. Tambahkan sumber, lalu buat ulang dokumen.]", ctx.bodyRPr, { italic: true })]), ref);
+      warnings.push("pustaka-perlu-diisi");
     } else {
       entryElems.forEach((e) => pkg.body.insertBefore(e, ref));
     }
@@ -539,5 +552,5 @@ export async function buildDocxFromTemplate(b: BuildInput, template: Uint8Array,
   }
   if (!out.file("word/document.xml") || !out.file("[Content_Types].xml")) throw new TemplateError("Gagal menyusun file Word hasil. Coba simpan ulang template dari Word sebagai .docx.");
   const buffer = out.generate({ type: "nodebuffer", compression: "DEFLATE" }) as Buffer;
-  return { buffer, citedCount: order.length, citedIds: order };
+  return { buffer, citedCount: order.length, citedIds: order, ...(warnings.length ? { warnings } : {}) };
 }

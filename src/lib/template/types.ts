@@ -1,4 +1,5 @@
 export type CoverField = "judul" | "nama" | "nim" | "prodi" | "kampus" | "tahun" | "pembimbing";
+import type { CiteStyle } from "../types";
 
 export const COVER_FIELDS: { id: CoverField; label: string }[] = [
   { id: "judul", label: "Judul" },
@@ -47,6 +48,11 @@ export interface Mapping {
   samples: { h1: number | null; h2: number | null; h3: number | null; body: number | null };
   tocMode: TocMode;
   tocHeading: number | null;
+  /**
+   * T12: gaya sitasi dokumen hasil. Terisi dari deteksi contoh daftar pustaka/sitasi di template dan bisa dikoreksi pengguna.
+   * null/tidak ada = ikut Pengaturan (APA atau Vancouver).
+   */
+  citeStyle?: CiteStyle | null;
 }
 
 export interface Analysis {
@@ -61,4 +67,6 @@ export interface Analysis {
   hasToc: boolean;
   placeholders: string[];
   warnings: string[];
+  /** T12: gaya sitasi yang terdeteksi dari template beserta alasannya. Tidak ada pada analisis lama yang tersimpan di peramban. */
+  citeStyle?: { style: CiteStyle | null; evidence: string };
 }

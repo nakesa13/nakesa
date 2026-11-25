@@ -1,3 +1,4 @@
+import type { CiteStyle } from "../types";
 import { COVER_FIELDS, type CoverField, type Mapping, type TocMode } from "./types";
 
 const MAX_IDX = 100_000;
@@ -40,6 +41,9 @@ export function parseMapping(v: unknown): Mapping | null {
   const tocHeading = opt(m.tocHeading);
   if (bibHeading === undefined || bibEnd === undefined || bodyEnd === undefined || tocHeading === undefined) return null;
   if (typeof m.tocMode !== "string" || !TOC_MODES.has(m.tocMode)) return null;
+  // T12: gaya sitasi dari template/koreksi pengguna. Nilai selain APA, Vancouver, atau kosong = bentuk tidak sah.
+  const cs = m.citeStyle;
+  if (cs !== undefined && cs !== null && cs !== "APA" && cs !== "Vancouver") return null;
 
   const coverFields: Record<string, CoverField> = {};
   if (m.coverFields && typeof m.coverFields === "object") {
@@ -62,5 +66,6 @@ export function parseMapping(v: unknown): Mapping | null {
     samples: samples as Mapping["samples"],
     tocMode: m.tocMode as TocMode,
     tocHeading,
+    ...(cs === undefined ? {} : { citeStyle: cs as CiteStyle | null }),
   };
 }

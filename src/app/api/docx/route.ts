@@ -69,13 +69,14 @@ export async function POST(req: Request) {
     const built = template && mapping ? await buildDocxFromTemplate(input, template, mapping) : await buildDocx(input);
     const { buffer } = built;
     // T12: periksa struktur sebelum dikirim. File rusak, atau sitasi tanpa entri daftar pustaka, tidak boleh sampai ke pengguna.
-    const report = inspectDocx(buffer, { cited: sources.filter((s) => built.citedIds.includes(s.id)) });
+    // Gaya sitasi efektif: koreksi/deteksi dari template menggantikan Pengaturan (sama dengan yang dipakai pembuat dokumen).
+    const report = inspectDocx(buffer, { cited: sources.filter((s) => built.citedIds.includes(s.id)), style: mapping?.citeStyle ?? style });
     if (!report.ok) {
       console.error("docx tidak lolos pemeriksaan:", report.problems.map((p) => p.code).join(","));
       const first = report.problems.find((p) => p.level === "error");
       return Response.json({ error: `File Word hasil tidak lolos pemeriksaan: ${first?.message ?? "struktur tidak valid."} Coba lagi; bila berulang, laporkan agar diperbaiki.` }, { status: 500 });
     }
-    const warnings = report.problems.filter((p) => p.level === "warning").map((p) => p.code);
+    const warnings = [...new Set([...(built.warnings ?? []), ...report.problems.filter((p) => p.level === "warning").map((p) => p.code)])];
     const fileName = (judul.replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "").slice(0, 60) || tpl.short) + ".docx";
     return new Response(new Uint8Array(buffer), {
       headers: {

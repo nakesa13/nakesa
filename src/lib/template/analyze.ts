@@ -1,6 +1,7 @@
 import { type Pkg, openPackage, countSections, sectPrOf } from "./package";
 import type { Analysis, BlockInfo, CoverField, FormatSummary, Mapping } from "./types";
 import { attr, child, descendants, lname, textOf } from "./xml";
+import type { CiteStyle } from "../types";
 
 
 const FRONT_RE =
@@ -11,6 +12,76 @@ const NUM_RE = /^\d+(\.\d+)*\.?\s+\S/;
 const BIB_RE = /^(DAFTAR\s+(PUSTAKA|REFERENSI)|REFERENCES?|REFERENSI)$/i;
 const APPENDIX_RE = /^LAMPIRAN\b/i;
 const PLACEHOLDER_RE = /\{\{\s*(judul|nama|nim|prodi|kampus|tahun|pembimbing)\s*\}\}/gi;
+
+// ---------- T12: gaya sitasi dari template ----------
+
+/** Entri APA: tahun dalam kurung lalu titik, mis. "Contoh, A. (2000). Judul." */
+const APA_ENTRY_RE = /\((?:(?:19|20)\d{2}[a-z]?|n\.d\.|tanpa tahun)\)\s*\./i;
+/** Entri Vancouver: diawali nomor, mis. "1. Contoh A. Judul." atau "[1] Contoh A." */
+const NUM_ENTRY_RE = /^\s*(?:\[\d{1,3}\]|\d{1,3}[.)])\s+\S/;
+const APA_CITE_RE = /\([A-Z][^()]{1,80},\s*(?:19|20)\d{2}[a-z]?\)/g;
+const VAN_CITE_RE = /\[\d{1,3}(?:\s*[,–-]\s*\d{1,3})*\]/g;
+
+/**
+ * Gaya sitasi yang dipakai contoh di template: dari bentuk contoh entri daftar pustaka dulu, lalu dari sitasi di contoh isi.
+ * Hanya menebak dari bentuk teks. Hasilnya dapat dikoreksi pengguna; null = tidak ada petunjuk (ikut Pengaturan).
+ */
+export function detectCiteStyle(els: Element[], bib: [number, number] | null, body: [number, number]): { style: CiteStyle | null; evidence: string } {
+  let apa = 0;
+  let van = 0;
+  let entries = 0;
+  if (bib) {
+    for (let i = bib[0]; i < bib[1] && entries < 30; i++) {
+      const el = els[i];
+      if (!el || lname(el) !== "p") continue;
+      const t = textOf(el).trim();
+      if (t.length < 15) continue;
+      entries++;
+      if (APA_ENTRY_RE.test(t)) apa++;
+      else if (NUM_ENTRY_RE.test(t)) van++;
+    }
+  }
+  if (apa !== van) {
+    const style: CiteStyle = apa > van ? "APA" : "Vancouver";
+    return { style, evidence: `${Math.max(apa, van)} dari ${entries} contoh entri daftar pustaka di template berbentuk ${style === "APA" ? "APA (tahun dalam kurung)" : "Vancouver (bernomor)"}.` };
+  }
+  let a2 = 0;
+  let v2 = 0;
+  for (let i = body[0]; i < body[1]; i++) {
+    const el = els[i];
+    if (!el || lname(el) !== "p") continue;
+    const t = textOf(el);
+    a2 += (t.match(APA_CITE_RE) ?? []).length;
+    v2 += (t.match(VAN_CITE_RE) ?? []).length;
+  }
+  if (a2 !== v2) {
+    const style: CiteStyle = a2 > v2 ? "APA" : "Vancouver";
+    return { style, evidence: `Contoh sitasi di isi template berbentuk ${style === "APA" ? "(Penulis, tahun)" : "[nomor]"}.` };
+  }
+  return { style: null, evidence: "Template tidak memuat contoh entri daftar pustaka atau sitasi yang bisa dikenali. Gaya sitasi ikut Pengaturan." };
+}
+
+/** Elemen di rentang blok yang seluruhnya diganti dokumen hasil, sehingga tidak dipertahankan. Dipakai analisis dan pembuat dokumen. */
+export function lostElements(els: Element[]): string[] {
+  const countIn = (name: string) => els.reduce((acc, el) => acc + (lname(el) === name ? 1 : 0) + descendants(el, name).length, 0);
+  const lost: string[] = [];
+  const nTbl = countIn("tbl");
+  const nImg = countIn("drawing") + countIn("pict");
+  const nBox = countIn("txbxContent");
+  const nSdt = countIn("sdt");
+  const nFn = countIn("footnoteReference") + countIn("endnoteReference");
+  if (nTbl) lost.push(`${nTbl} tabel`);
+  if (nImg) lost.push(`${nImg} gambar`);
+  if (nBox) lost.push(`${nBox} kotak teks`);
+  if (nSdt) lost.push(`${nSdt} kontrol konten`);
+  if (nFn) lost.push(`${nFn} catatan kaki`);
+  return lost;
+}
+
+/** Jumlah pemisah bagian halaman (w:sectPr di dalam paragraf) pada rentang blok. */
+export function sectionBreaksIn(els: Element[]): number {
+  return els.filter((el) => lname(el) === "p" && child(child(el, "pPr"), "sectPr")).length;
+}
 
 // ---------- potongan kecil ----------
 
@@ -310,20 +381,21 @@ export function analyzePackage(pkg: Pkg): Analysis {
   // T11: elemen yang tidak dikenal/ tidak bisa dipertahankan diberi peringatan, tidak dibuang diam-diam.
   // Isi area isi diganti seluruhnya oleh dokumen Anda, jadi tabel, gambar, kotak teks, kontrol konten, dan catatan kaki di sana ikut hilang.
   const replaced = pkg.blocks.slice(start, endIdx);
-  const countIn = (name: string) => replaced.reduce((acc, el) => acc + (lname(el) === name ? 1 : 0) + descendants(el, name).length, 0);
-  const lost: string[] = [];
-  const nTbl = countIn("tbl");
-  const nImg = countIn("drawing") + countIn("pict");
-  const nBox = countIn("txbxContent");
-  const nSdt = countIn("sdt");
-  const nFn = countIn("footnoteReference") + countIn("endnoteReference");
-  if (nTbl) lost.push(`${nTbl} tabel`);
-  if (nImg) lost.push(`${nImg} gambar`);
-  if (nBox) lost.push(`${nBox} kotak teks`);
-  if (nSdt) lost.push(`${nSdt} kontrol konten`);
-  if (nFn) lost.push(`${nFn} catatan kaki`);
+  const lost = lostElements(replaced);
   if (lost.length) {
     warnings.push(`Area isi template memuat ${lost.join(", ")}. Semuanya akan diganti oleh isi dokumen Anda. Bila perlu dipertahankan, pindahkan ke luar area isi (mis. sampul atau lampiran) atau atur ulang "Paragraf pertama isi".`);
+  }
+  // Area daftar pustaka (setelah judulnya, sampai Lampiran) juga diganti seluruhnya oleh daftar pustaka dokumen.
+  const bibRegionEnd = bibEnd ?? (n > 0 && lname(pkg.blocks[n - 1]) === "sectPr" ? n - 1 : n);
+  const bibRegion = bibHeading !== null ? pkg.blocks.slice(bibHeading + 1, bibRegionEnd) : [];
+  const lostBib = lostElements(bibRegion);
+  if (lostBib.length) {
+    warnings.push(`Area daftar pustaka template memuat ${lostBib.join(", ")}. Semuanya akan diganti oleh daftar pustaka dokumen Anda. Pindahkan ke luar area ini (mis. ke Lampiran) bila perlu dipertahankan.`);
+  }
+  // Di tiap area yang diganti hanya pemisah bagian halaman terakhir yang dipertahankan.
+  const mergedBreaks = Math.max(0, sectionBreaksIn(replaced) - 1) + Math.max(0, sectionBreaksIn(bibRegion) - 1);
+  if (mergedBreaks > 0) {
+    warnings.push(`Area isi/daftar pustaka template memuat ${mergedBreaks + 1} pemisah bagian halaman. Hanya yang terakhir dipertahankan, jadi header, footer, dan penomoran halaman dari pemisah lain tidak ikut.`);
   }
   const settingsXml = pkg.zip.file("word/settings.xml");
   if (settingsXml && /attachedTemplate/.test(settingsXml.asText())) {
@@ -331,6 +403,7 @@ export function analyzePackage(pkg: Pkg): Analysis {
   }
 
   const coverFields = placeholders.size ? {} : guessCover(blocks, start);
+  const cite = detectCiteStyle(pkg.blocks, bibHeading !== null ? [bibHeading + 1, bibRegionEnd] : null, [start, endIdx]);
 
   const suggested: Mapping = {
     bodyStart: start,
@@ -341,6 +414,7 @@ export function analyzePackage(pkg: Pkg): Analysis {
     samples: { h1, h2, h3, body: bodyIdx },
     tocMode: hasTocField ? "keep" : tocHeading >= 0 ? "replace" : "add",
     tocHeading: tocHeading >= 0 ? tocHeading : null,
+    citeStyle: cite.style,
   };
 
   const MAX_BLOCKS = 700;
@@ -358,6 +432,7 @@ export function analyzePackage(pkg: Pkg): Analysis {
     hasToc,
     placeholders: [...placeholders],
     warnings,
+    citeStyle: cite,
   };
 }
 

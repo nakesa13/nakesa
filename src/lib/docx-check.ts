@@ -1,5 +1,5 @@
 import PizZip from "pizzip";
-import type { Source } from "./types";
+import type { CiteStyle, Source } from "./types";
 import { MARKER_RE } from "./citations";
 import { assertSafeZip } from "./template/package";
 import { DOCX_WARNING_TEXT } from "./docx-warnings";
@@ -37,7 +37,7 @@ const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
 /** Awal judul sumber yang dipakai untuk mencari entrinya di daftar pustaka. */
 const titleKey = (s: Source): string => norm(xmlSafe(s.title)).slice(0, 40);
 
-export function inspectDocx(buf: Uint8Array, opts: { cited?: Source[] } = {}): DocxReport {
+export function inspectDocx(buf: Uint8Array, opts: { cited?: Source[]; style?: CiteStyle } = {}): DocxReport {
   const problems: DocxProblem[] = [];
   const add = (level: DocxProblem["level"], code: string, message: string) => problems.push({ level, code, message });
   const done = (paragraphs: string[] = []): DocxReport => ({ ok: !problems.some((p) => p.level === "error"), problems, paragraphs });
@@ -100,6 +100,30 @@ export function inspectDocx(buf: Uint8Array, opts: { cited?: Source[] } = {}): D
     const key = titleKey(s);
     if (key && !text.includes(key)) {
       add("error", "pustaka-hilang", `Sumber ${s.id} dikutip di isi tetapi tidak ditemukan di daftar pustaka dokumen.`);
+    }
+  }
+
+  // T12: sitasi di isi dan entri daftar pustaka harus saling cocok menurut gaya yang dipakai. Hanya peringatan: bentuk teks bisa menipu.
+  const bibAt = paragraphs.map(norm).lastIndexOf("daftar pustaka");
+  if (opts.style && opts.cited?.length && bibAt >= 0) {
+    const bodyText = paragraphs.slice(0, bibAt).join("\n");
+    const entries = paragraphs.slice(bibAt + 1);
+    const n = opts.cited.length;
+    if (opts.style === "Vancouver") {
+      const used = new Set<number>();
+      for (const m of bodyText.matchAll(/\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\]/g)) for (const x of m[1].split(",")) used.add(Number(x));
+      for (let i = 1; i <= n; i++) {
+        if (!used.has(i)) add("warning", "sitasi-tak-cocok", `Entri daftar pustaka nomor ${i} tidak dikutip di isi.`);
+        if (!entries.some((e) => new RegExp(`^${i}\\.\\s`).test(e))) add("warning", "sitasi-tak-cocok", `Sitasi [${i}] tidak punya entri bernomor ${i} di daftar pustaka.`);
+      }
+      for (const u of used) if (u > n) add("warning", "sitasi-tak-cocok", `Sitasi [${u}] menunjuk entri yang tidak ada (daftar pustaka hanya ${n} entri).`);
+    } else {
+      const hay = norm(bodyText);
+      for (const s of opts.cited) {
+        const family = norm(xmlSafe(s.authors[0]?.family ?? ""));
+        const year = (s.year ?? "").trim();
+        if (family && year && !(hay.includes(family) && hay.includes(year))) add("warning", "sitasi-tak-cocok", `Sumber ${s.id} ada di daftar pustaka tetapi sitasi (${s.authors[0]?.family}, ${year}) tidak ditemukan di isi.`);
+      }
     }
   }
 

@@ -4,6 +4,7 @@ import { apiUpload } from "@/lib/client";
 import { deleteTemplate, saveTemplate, type StoredTemplate } from "@/lib/templateStore";
 import { COVER_FIELDS, type Analysis, type CoverField, type Mapping, type TocMode } from "@/lib/template/types";
 import { mappingIssues } from "@/lib/template/mapping";
+import type { CiteStyle } from "@/lib/types";
 import { sha256Hex } from "@/lib/template/ref";
 
 const TOC_LABEL: Record<TocMode, string> = {
@@ -189,6 +190,10 @@ export function TemplateStep({
           <p>
             Daftar isi: <b>{TOC_LABEL[m.tocMode]}</b>
           </p>
+          <p>
+            Gaya sitasi: <b>{m.citeStyle ?? "ikut Pengaturan"}</b>
+            {a.citeStyle && <span className="text-muted"> · terdeteksi dari template: {a.citeStyle.evidence}</span>}
+          </p>
         </div>
         {note && <p className="mt-3 text-sm text-[var(--warn-ink)]">{note}</p>}
         {error && <p className="mt-3 text-sm text-red-600" role="alert">{error}</p>}
@@ -223,6 +228,16 @@ export function TemplateStep({
             </select>
           </div>
           <BlockSelect label="Judul &quot;DAFTAR ISI&quot; di template" value={m.tocHeading} onChange={(v) => setMapping({ tocHeading: v })} analysis={a} none="Tidak ada" />
+          <div>
+            <label className="label" htmlFor="cite-style">
+              Gaya sitasi dan daftar pustaka
+            </label>
+            <select id="cite-style" className="field" value={m.citeStyle ?? ""} onChange={(e) => setMapping({ citeStyle: e.target.value === "" ? null : (e.target.value as CiteStyle) })}>
+              <option value="">Ikut Pengaturan</option>
+              <option value="APA">APA (Penulis, tahun)</option>
+              <option value="Vancouver">Vancouver (nomor)</option>
+            </select>
+          </div>
         </div>
         <h3 className="mb-2 mt-5 text-sm font-semibold">Contoh format (diambil dari paragraf di template)</h3>
         <div className="grid gap-4 sm:grid-cols-2">

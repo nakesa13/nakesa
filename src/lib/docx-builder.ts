@@ -46,6 +46,8 @@ export interface BuildResult {
   citedCount: number;
   /** T12: id sumber yang dikutip dan masuk daftar pustaka (urutan kemunculan). Dipakai pemeriksa .docx. */
   citedIds: string[];
+  /** T12: kode peringatan dari pembuat dokumen berbasis template (teksnya di docx-warnings.ts). Hanya ada bila ada peringatan. */
+  warnings?: string[];
 }
 
 const NUMBERED_REF = "nakesa-numbered";
