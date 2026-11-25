@@ -37,6 +37,7 @@ npm run build
 | `journal-extract.test.ts` | T10: PDF yang hanya sebagian terbaca ditandai (unpdf ditiru) |
 | `template-safety.test.ts` | T11: zip bomb, path traversal, banyak entri, makro, DOCTYPE/ENTITY, XML rusak = 422, peringatan elemen tak dikenal, tautan template luar dibuang, `mappingIssues`, id/versi/pemetaan template (`ref.ts`) |
 | `template-structure.test.ts` | T11/T12: hasil mengisi template asli: urutan heading dan nama style, styles/header/footer/media disalin apa adanya, margin dan penomoran per bagian, TOC field, daftar pustaka di posisi template, gaya sitasi terdeteksi dan bisa dikoreksi, "perlu diisi" tanpa sumber, peringatan elemen yang dibuang |
+| `reviewer.test.ts` | T14: Academic Reviewer: tiap aturan (struktur, kelengkapan, bahasa, sitasi) diuji positif dan negatif, tiap temuan punya lokasi + alasan + saran, tanpa skor/label kelayakan/perbaikan otomatis, murni dan deterministik, dokumen rapi = nol temuan, ketahanan terhadap teks patologis (regresi regex kuadratik) |
 | lainnya | Lihat `docs/audit/BASELINE.md` bagian 5 |
 
 Catatan:

@@ -30,6 +30,8 @@ import { documentTitle, identityPayload, sectionPayload } from "@/lib/export";
 import { warningText } from "@/lib/docx-warnings";
 import { extractMarkerIds } from "@/lib/citations";
 import { analyzeReferences, findDuplicateOf, isCitable } from "@/lib/refs";
+import { reviewDocument } from "@/lib/reviewer";
+import { ReviewPanel } from "./ReviewPanel";
 
 const EMPTY_LIB: Source[] = [];
 
@@ -56,6 +58,8 @@ export function Wizard({ docType }: { docType: DocType }) {
   const [dl, setDl] = useState<{ busy: boolean; error: string }>({ busy: false, error: "" });
   // T12: pratinjau perkiraan dan peringatan dari pemeriksa .docx di server.
   const [showPreview, setShowPreview] = useState(false);
+  // T14: tinjauan dokumen (Academic Reviewer) dihitung hanya saat dibuka dan tidak mengubah teks.
+  const [showReview, setShowReview] = useState(false);
   const [dlWarn, setDlWarn] = useState<string[]>([]);
   const stopRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -359,6 +363,15 @@ export function Wizard({ docType }: { docType: DocType }) {
       })
     : null;
 
+  // T14: temuan berbasis aturan tetap (tanpa AI). Murni: tidak mengubah teks, tidak memberi skor atau label kelayakan.
+  const reviewReport = showReview
+    ? reviewDocument({
+        docType,
+        sections: sections.map((s) => ({ def: s, title: resolveTitle(s, effectiveInput), text: s.kind === "heading" ? "" : textOf(s) })),
+        sources,
+        input: effectiveInput,
+      })
+    : null;
   // T38: kemajuan antrean "Tulis semua" (bagian selesai = berhasil + gagal).
   const progressDone = progress ? progress.done + progress.failed : 0;
   const progressPct = progress && progress.total ? Math.round((progressDone / progress.total) * 100) : 0;
@@ -580,6 +593,9 @@ export function Wizard({ docType }: { docType: DocType }) {
                 <button className="btn" onClick={() => setShowPreview((v) => !v)}>
                   <Icon name="file" className="h-4 w-4" /> {showPreview ? "Tutup pratinjau" : "Pratinjau / PDF (perkiraan)"}
                 </button>
+                <button className="btn" onClick={() => setShowReview((v) => !v)}>
+                  <Icon name="check" className="h-4 w-4" /> {showReview ? "Tutup tinjauan" : "Tinjau dokumen"}
+                </button>
               </div>
             </div>
             {progress && progress.total > 0 && (
@@ -625,11 +641,13 @@ export function Wizard({ docType }: { docType: DocType }) {
 
           {previewDoc && <PreviewPane doc={previewDoc} formatLabel={tplRec ? `template ${tplRec.name}` : "bawaan NAKESA"} onClose={() => setShowPreview(false)} />}
 
+          {reviewReport && <ReviewPanel report={reviewReport} onClose={() => setShowReview(false)} />}
+
           {sections.map((s) => {
             const title = resolveTitle(s, effectiveInput);
             if (s.kind === "heading") {
               return (
-                <h3 key={s.id} className={`pt-2 font-semibold ${s.level === 1 ? "text-base uppercase tracking-wide text-brand" : "text-sm"}`}>
+                <h3 key={s.id} id={`sec-${s.id}`} className={`pt-2 font-semibold ${s.level === 1 ? "text-base uppercase tracking-wide text-brand" : "text-sm"}`}>
                   {title}
                 </h3>
               );
@@ -638,7 +656,7 @@ export function Wizard({ docType }: { docType: DocType }) {
             const w = warnings[s.id];
             const strippedIds = stripped[s.id] ?? [];
             return (
-              <article key={s.id} className="card p-4">
+              <article key={s.id} id={`sec-${s.id}`} className="card p-4">
                 <div className="flex flex-wrap items-start gap-2">
                   <h4 className="flex-1 text-sm font-semibold">{title}</h4>
                   {s.kind === "data" && <span className="badge badge-mute">{s.manual ? "Isi sendiri" : "Dari isian Anda"}</span>}
