@@ -14,6 +14,11 @@ export interface Draft {
   outline?: OutlineItem[] | null;
   /** T11: template (id, versi, pemetaan) yang dipakai dokumen ini. null/tidak ada = format bawaan NAKESA. */
   template?: TemplateRef | null;
+  /**
+   * T40: nomor versi draf (seperti ETag), naik 1 setiap tulis. Dipakai mendeteksi tulis dari tab lain; lihat conflict.ts.
+   * Draf lama tanpa rev dianggap 0. Bukan isi dokumen: tidak ikut ekspor.
+   */
+  rev?: number;
 }
 
 export const EMPTY_DRAFT: Draft = { input: {}, sources: [], texts: {}, step: 0, outline: null };

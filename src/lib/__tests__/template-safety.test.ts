@@ -103,7 +103,7 @@ describe("T11: route analisis menjawab 422 untuk template berbahaya", () => {
   let n = 0;
   const post = (bytes: Uint8Array) => {
     const fd = new FormData();
-    fd.set("file", new File([bytes], "template.docx"));
+    fd.set("file", new File([new Uint8Array(bytes)], "template.docx"));
     return analyzePOST(new Request("http://localhost/api/template/analyze", { method: "POST", body: fd, headers: { "x-forwarded-for": `10.77.0.${++n}` } }));
   };
 

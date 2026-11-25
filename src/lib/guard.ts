@@ -9,12 +9,22 @@ import { parseProvenance } from "./provenance";
  */
 const buckets = new Map<string, { count: number; reset: number }>();
 
-export function guard(req: Request, limitPerHour = Number(process.env.RATE_LIMIT_PER_HOUR) || 200): Response | null {
+export function clientIp(req: Request): string {
+  return req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+}
+
+/** Hanya memeriksa kode akses (tidak menghitung kuota). */
+export function checkAccess(req: Request): Response | null {
   const code = process.env.ACCESS_CODE;
   if (code && req.headers.get("x-access-code") !== code) {
     return Response.json({ error: "Kode akses salah atau belum diisi. Isi di menu Pengaturan." }, { status: 401 });
   }
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+  return null;
+}
+
+/** Menghitung satu permintaan ke kuota per IP per jam; 429 bila batas terlampaui. */
+export function chargeQuota(req: Request, limitPerHour = Number(process.env.RATE_LIMIT_PER_HOUR) || 200): Response | null {
+  const ip = clientIp(req);
   const now = Date.now();
   const b = buckets.get(ip);
   if (!b || b.reset < now) {
@@ -23,6 +33,10 @@ export function guard(req: Request, limitPerHour = Number(process.env.RATE_LIMIT
     return Response.json({ error: "Terlalu banyak permintaan. Coba lagi nanti." }, { status: 429 });
   }
   return null;
+}
+
+export function guard(req: Request, limitPerHour = Number(process.env.RATE_LIMIT_PER_HOUR) || 200): Response | null {
+  return checkAccess(req) ?? chargeQuota(req, limitPerHour);
 }
 
 export function isInput(v: unknown): v is Input {

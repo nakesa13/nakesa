@@ -1,4 +1,5 @@
 import type { CiteStyle, DocType, Identity, Input, Source } from "../types";
+import { applyEdits, choiceEdits, diffSlots, type Choice, type Conflict } from "../conflict";
 import { buildInput, caseDerivedInput, linkConfirmMessage, reusePreview, type ReuseItem, type SharedCase } from "../kasus";
 import { dropDynamicTexts } from "../outline";
 import { parseProvenance } from "../provenance";
@@ -540,6 +541,51 @@ export class WorkspaceStore {
     const next: DocumentRec = { ...this.bump(doc), head, citeSeq: Math.max(doc.citeSeq, maxCite(head.sourceRefs)) };
     await this.write([{ kind: "put", store: "documents", key: id, value: next }], [this.revGuard("documents", doc)]);
     return next;
+  }
+
+  /**
+   * T40: simpan keadaan kerja dengan deteksi konflik. `base` = rev dan isi yang dilihat penyunting saat mulai mengubah.
+   *  - rev dokumen masih sama: tersimpan seperti saveHead.
+   *  - sudah ditulis pihak lain (tab/perangkat lain): perubahan di slot yang tidak disentuh pihak lain digabung; slot yang
+   *    sama-sama diubah TIDAK ditimpa dan dikembalikan sebagai `conflicts` untuk dipilih pengguna (resolveHeadConflicts).
+   * Tidak melempar "conflict" untuk kasus ini (itu tetap perilaku saveHead dengan expectedRev); hanya melempar bila tabrakan
+   * terjadi berulang kali di tengah penyimpanan.
+   */
+  async saveHeadChecked(id: string, head: DocHead, base: { rev: number; head: DocHead }): Promise<{ doc: DocumentRec; conflicts: Conflict[]; saved: boolean }> {
+    for (let attempt = 0; ; attempt++) {
+      const doc = await this.getDocument(id);
+      let toSave = head;
+      let conflicts: Conflict[] = [];
+      if (doc.rev !== base.rev) {
+        const r = applyEdits(doc.head, diffSlots(base.head, head));
+        conflicts = r.conflicts;
+        const stepChanged = head.step !== base.head.step;
+        if (!r.applied && !stepChanged) return { doc, conflicts, saved: false };
+        toSave = stepChanged ? { ...r.value, step: head.step } : r.value;
+      }
+      try {
+        return { doc: await this.saveHead(id, toSave, doc.rev), conflicts, saved: true };
+      } catch (e) {
+        if (e instanceof StoreError && e.code === "conflict" && attempt < 2) continue; // ditulis lagi di tengah jalan: gabungkan ulang
+        throw e;
+      }
+    }
+  }
+
+  /** T40: terapkan pilihan pengguna untuk konflik dari saveHeadChecked. "theirs" tidak menulis apa pun; yang berubah lagi menjadi konflik baru. */
+  async resolveHeadConflicts(id: string, conflicts: Conflict[], choices: Record<string, Choice | undefined>): Promise<{ doc: DocumentRec; conflicts: Conflict[] }> {
+    const edits = choiceEdits(conflicts, choices);
+    for (let attempt = 0; ; attempt++) {
+      const doc = await this.getDocument(id);
+      const r = applyEdits(doc.head, edits);
+      if (!r.applied) return { doc, conflicts: r.conflicts };
+      try {
+        return { doc: await this.saveHead(id, r.value, doc.rev), conflicts: r.conflicts };
+      } catch (e) {
+        if (e instanceof StoreError && e.code === "conflict" && attempt < 2) continue;
+        throw e;
+      }
+    }
   }
 
   private async validateRefs(doc: DocumentRec, refs: SourceRef[], strict: boolean): Promise<void> {

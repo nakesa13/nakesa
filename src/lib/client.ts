@@ -33,10 +33,25 @@ function headers(accessCode: string, json: boolean): HeadersInit {
   return h;
 }
 
-async function fail(res: Response): Promise<never> {
-  const data = (await res.json().catch(() => ({}))) as { error?: string };
-  throw new Error(data.error ?? `Terjadi kesalahan (${res.status}).`);
+/** T38: galat dari server dengan status HTTP dan petunjuk apakah aman dicoba ulang. Tetap sebuah Error (pemanggil lama cukup membaca .message). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public retryable: boolean
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
 }
+
+async function fail(res: Response): Promise<never> {
+  const data = (await res.json().catch(() => ({}))) as { error?: string; retryable?: boolean };
+  throw new ApiError(data.error ?? `Terjadi kesalahan (${res.status}).`, res.status, data.retryable === true);
+}
+
+export const apiHeaders = headers;
+export const apiFail = fail;
 
 export async function apiPost<T>(url: string, body: unknown, accessCode: string): Promise<T> {
   const res = await fetch(url, { method: "POST", headers: headers(accessCode, true), body: JSON.stringify(body) });

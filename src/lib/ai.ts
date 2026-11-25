@@ -4,6 +4,7 @@ import type { SectionDef } from "@/templates/types";
 import { TEMPLATES, resolveTitle } from "@/templates";
 import { caseBlock } from "./case";
 import { sanitizeMarkers } from "./citations";
+import { DeadlineError, sleepOrAbort, type Deadline } from "./deadline";
 import { journalPromptLines } from "./journal";
 import { sourceStatus } from "./refs";
 
@@ -142,7 +143,7 @@ function retryAfterMs(res: Response, message: string): number {
   return 8_000;
 }
 
-export async function callGroq(system: string, user: string, maxTokens: number, model: string): Promise<string> {
+export async function callGroq(system: string, user: string, maxTokens: number, model: string, deadline?: Deadline): Promise<string> {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new AiConfigError("GROQ_API_KEY belum diatur di file .env.local");
 
@@ -151,6 +152,8 @@ export async function callGroq(system: string, user: string, maxTokens: number, 
   const reasoning = model.startsWith("openai/gpt-oss");
 
   for (let attempt = 0; attempt < 3; attempt++) {
+    // T38: batas waktu server (serverless) menang atas batas waktu per-panggilan 90 detik di bawah.
+    if (deadline?.signal.aborted) throw new DeadlineError();
     let res: Response;
     try {
       res = await fetch(GROQ_URL, {
@@ -166,9 +169,10 @@ export async function callGroq(system: string, user: string, maxTokens: number, 
           temperature: 0.3,
           ...(reasoning ? { reasoning_effort: "low" } : {}),
         }),
-        signal: AbortSignal.timeout(90_000),
+        signal: deadline ? AbortSignal.any([AbortSignal.timeout(90_000), deadline.signal]) : AbortSignal.timeout(90_000),
       });
     } catch {
+      if (deadline?.signal.aborted) throw new DeadlineError();
       throw new ProviderError("Tidak dapat menghubungi Groq. Periksa koneksi internet server.", 502);
     }
 
@@ -196,7 +200,11 @@ export async function callGroq(system: string, user: string, maxTokens: number, 
         throw new ProviderError("Kuota harian Groq habis. Coba lagi besok atau ganti model.", 429);
       }
       if (attempt < 2) {
-        await sleep(wait);
+        // T38: menunggu lebih lama dari sisa waktu server percuma (fungsi dipotong platform); gagal cepat agar klien yang mengulang.
+        if (deadline && wait > deadline.remainingMs()) {
+          throw new ProviderError("Kuota Groq (per menit) sedang penuh. Tunggu sebentar lalu coba lagi.", 429);
+        }
+        await (deadline ? sleepOrAbort(wait, deadline.signal) : sleep(wait));
         continue;
       }
       throw new ProviderError("Kuota Groq (per menit) sedang penuh. Tunggu sebentar lalu tulis ulang bagian ini.", 429);
@@ -225,7 +233,9 @@ export async function generateSection(
   input: Input,
   sources: Source[],
   /** Tahap B: definisi bagian yang dibangun server dari struktur template mahasiswa. */
-  override?: SectionDef
+  override?: SectionDef,
+  /** T38: batas waktu server; panggilan ke penyedia AI dihentikan bersamanya. */
+  deadline?: Deadline
 ): Promise<AiResult> {
   const section = override ?? TEMPLATES[docType].sections.find((s) => s.id === sectionId);
   if (!section || section.kind !== "ai") throw new Error("Bagian tidak dikenal");
@@ -238,17 +248,29 @@ export async function generateSection(
   if (process.env.NAKESA_MOCK_AI === "1") {
     raw = mockText(resolveTitle(section, input), usable);
   } else if (provider === "groq") {
-    raw = await callGroq(SYSTEM, prompt, Math.min(2500, Math.ceil(words * 2.6) + 300), groqModel(docType));
+    raw = await callGroq(SYSTEM, prompt, Math.min(2500, Math.ceil(words * 2.6) + 300), groqModel(docType), deadline);
   } else {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new AiConfigError("ANTHROPIC_API_KEY belum diatur di file .env.local");
     }
-    const res = await client().messages.create({
-      model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
-      max_tokens: Math.min(4000, Math.ceil(words * 4) + 600),
-      system: SYSTEM,
-      messages: [{ role: "user", content: prompt }],
-    });
+    const create = () =>
+      client().messages.create(
+        {
+          model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
+          max_tokens: Math.min(4000, Math.ceil(words * 4) + 600),
+          system: SYSTEM,
+          messages: [{ role: "user", content: prompt }],
+        },
+        // T38: satu percobaan ulang SDK paling banyak, dan selalu dibatasi sinyal batas waktu server.
+        deadline ? { signal: deadline.signal, maxRetries: 1 } : undefined
+      );
+    let res: Awaited<ReturnType<typeof create>>;
+    try {
+      res = await create();
+    } catch (e) {
+      if (deadline?.signal.aborted) throw new DeadlineError();
+      throw e;
+    }
     raw = res.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
       .map((b) => b.text)

@@ -22,6 +22,17 @@ function read(key: string): string | null {
 
 const noopSubscribe = () => () => {};
 
+/** T40: baca nilai tersimpan sekarang, secara sinkron (bukan nilai dari render terakhir). */
+export function readLocalValue<T>(key: string, initial: T): T {
+  const raw = read(key);
+  if (raw == null) return initial;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return initial;
+  }
+}
+
 /** True setelah halaman dimuat di browser (false saat render server / hidrasi). */
 export function useHydrated(): boolean {
   return useSyncExternalStore(noopSubscribe, () => true, () => false);

@@ -5,8 +5,12 @@ import type { DocType, Input, SectionWarnings, Source } from "@/lib/types";
 import { TEMPLATES, resolveTitle } from "@/templates";
 import type { FieldDef, SectionDef, StepDef } from "@/templates/types";
 import { analyzeSection, journalSourceFromInput, renderDataSection, KOSONG } from "@/lib/case";
-import { DRAFT_PREFIX, LIBRARY_KEY, SETTINGS_DEFAULT, SETTINGS_KEY, apiDocx, apiPost, safeFileName, saveBlob, type Settings } from "@/lib/client";
+import { DRAFT_PREFIX, LIBRARY_KEY, SETTINGS_DEFAULT, SETTINGS_KEY, apiDocx, safeFileName, saveBlob, type Settings } from "@/lib/client";
+import { apiGenerate, isQueueFatal, newJobId, statusLabel } from "@/lib/genjob";
 import { useHydrated, useLocalState } from "@/lib/useLocalState";
+import { useGuardedDraft } from "@/lib/useGuardedDraft";
+import { ConflictDialog } from "./ConflictDialog";
+import type { Conflict } from "@/lib/conflict";
 import { Icon } from "./Icon";
 import { JournalField } from "./JournalField";
 import { SourceManager, nextSourceId } from "./SourceManager";
@@ -35,7 +39,8 @@ export function Wizard({ docType }: { docType: DocType }) {
   const tpl = TEMPLATES[docType];
   const hydrated = useHydrated();
   const [settings] = useLocalState<Settings>(SETTINGS_KEY, SETTINGS_DEFAULT);
-  const [draft, setDraft] = useLocalState<Draft>(DRAFT_PREFIX + docType, EMPTY_DRAFT);
+  // T40: draf dengan deteksi konflik antar tab. `setDraft` berbentuk sama seperti sebelumnya; perubahan yang bertabrakan ditahan sebagai `conflicts`.
+  const { draft, update: setDraft, replace: replaceDraft, resolve: resolveConflicts, snapshot, isStale, conflicts } = useGuardedDraft(DRAFT_PREFIX + docType, EMPTY_DRAFT);
   const [sharedCase, setSharedCase] = useLocalState<SharedCase>(CASE_KEY, EMPTY_CASE);
   const [library, setLibrary] = useLocalState<Source[]>(LIBRARY_KEY, EMPTY_LIB);
   const [libMsg, setLibMsg] = useState("");
@@ -45,11 +50,17 @@ export function Wizard({ docType }: { docType: DocType }) {
   const [secErr, setSecErr] = useState<Record<string, string>>({});
   const [stripped, setStripped] = useState<Record<string, string[]>>({});
   const [running, setRunning] = useState(false);
+  // T38: status per bagian (teks tahap: menulis, mencoba lagi, ...) dan kemajuan antrean "Tulis semua".
+  const [stage, setStage] = useState<Record<string, string>>({});
+  const [progress, setProgress] = useState<{ done: number; total: number; failed: number; current: string; currentId: string; end?: "done" | "stopped" | "fatal" } | null>(null);
   const [dl, setDl] = useState<{ busy: boolean; error: string }>({ busy: false, error: "" });
   // T12: pratinjau perkiraan dan peringatan dari pemeriksa .docx di server.
   const [showPreview, setShowPreview] = useState(false);
   const [dlWarn, setDlWarn] = useState<string[]>([]);
   const stopRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  // T38: satu jobId per bagian selama belum berhasil. Mencoba ulang bagian yang gagal memakai jobId yang sama, jadi server tidak memotong kuota dua kali.
+  const jobIds = useRef<Record<string, string>>({});
   const [tplRec, setTplRec] = useState<StoredTemplate | null>(null);
   const [tplLoading, setTplLoading] = useState(true);
 
@@ -127,7 +138,8 @@ export function Wizard({ docType }: { docType: DocType }) {
     if (s.id in draft.texts) return draft.texts[s.id];
     return s.kind === "data" ? renderDataSection(docType, s.ref ?? s.id, effectiveInput) : "";
   };
-  const setText = (id: string, text: string) => setDraft((d) => ({ ...d, texts: { ...d.texts, [id]: text } }));
+  // `base` = keadaan draf saat pekerjaan async dimulai: hasil yang datang belakangan tidak menimpa teks yang diubah sementara itu.
+  const setText = (id: string, text: string, base?: Draft): Conflict[] => setDraft((d) => ({ ...d, texts: { ...d.texts, [id]: text } }), base ? { base } : undefined);
 
   const aiSections = sections.filter((s) => s.kind === "ai");
   // Tanpa sumber berisi, AI memang tidak boleh mengutip: peringatan "belum ada rujukan" per bagian hanya noise, cukup satu pesan di atas.
@@ -176,33 +188,72 @@ export function Wizard({ docType }: { docType: DocType }) {
   };
 
   // ---- generate ----
-  const genOne = async (def: SectionDef) => {
+  type GenOutcome = "ok" | "error" | "fatal" | "aborted";
+  const genOne = async (def: SectionDef, signal?: AbortSignal): Promise<GenOutcome> => {
     setBusy((b) => ({ ...b, [def.id]: true }));
     setSecErr((e) => ({ ...e, [def.id]: "" }));
+    setStage((s) => ({ ...s, [def.id]: "Menunggu…" }));
+    // jobId bertahan sampai bagian ini berhasil: mencoba ulang (otomatis atau lewat tombol) tidak memotong kuota dua kali.
+    // Setelah berhasil ia dihapus, jadi "Tulis ulang" adalah pekerjaan baru.
+    const jobId = (jobIds.current[def.id] ??= newJobId());
+    // T40: keadaan draf saat penulisan dimulai. Penulisan bisa lama (T38); bila bagian ini diubah selama itu, hasil AI tidak menimpanya diam-diam.
+    const base = snapshot();
     try {
-      const r = await apiPost<{ text: string; stripped: string[] }>("/api/generate", { docType, sectionId: def.id, ...(outline ? { item: outline.find((i) => i.id === def.id) } : {}), input: effectiveInput, sources }, settings.accessCode);
-      setText(def.id, r.text);
-      setStripped((s) => ({ ...s, [def.id]: r.stripped }));
+      const r = await apiGenerate(
+        { docType, sectionId: def.id, ...(outline ? { item: outline.find((i) => i.id === def.id) } : {}), input: effectiveInput, sources },
+        settings.accessCode,
+        jobId,
+        { signal, onStatus: (s) => setStage((m) => ({ ...m, [def.id]: statusLabel(s) })) }
+      );
+      const clash = setText(def.id, r.text, base);
+      if (!clash.length) setStripped((s) => ({ ...s, [def.id]: r.stripped }));
+      delete jobIds.current[def.id];
+      return "ok";
     } catch (e) {
+      // Dihentikan pengguna: bukan galat. jobId disimpan, jadi bila server sudah selesai, melanjutkan memakai hasilnya tanpa kuota baru.
+      if (signal?.aborted) return "aborted";
       setSecErr((m) => ({ ...m, [def.id]: e instanceof Error ? e.message : "Gagal menulis bagian ini." }));
+      return isQueueFatal(e) ? "fatal" : "error";
     } finally {
       setBusy((b) => ({ ...b, [def.id]: false }));
+      setStage((s) => ({ ...s, [def.id]: "" }));
     }
   };
 
+  // Antrean berurutan: kuota token per menit penyedia gratis kecil, paralel memicu galat 429.
   const genAll = async () => {
     stopRef.current = false;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setRunning(true);
     const queue = [...pending];
-    const worker = async () => {
-      while (!stopRef.current) {
-        const def = queue.shift();
-        if (!def) return;
-        await genOne(def);
+    const total = queue.length;
+    let done = 0;
+    let failed = 0;
+    let end: "done" | "stopped" | "fatal" = "done";
+    while (!stopRef.current) {
+      const def = queue.shift();
+      if (!def) break;
+      setProgress({ done, total, failed, current: resolveTitle(def, effectiveInput), currentId: def.id });
+      const r = await genOne(def, ctrl.signal);
+      if (r === "ok") done++;
+      else if (r === "aborted") break;
+      else {
+        failed++;
+        if (r === "fatal") {
+          end = "fatal";
+          break;
+        }
       }
-    };
-    await worker(); // berurutan: kuota token per menit penyedia gratis kecil, paralel memicu galat 429
+    }
+    if (stopRef.current) end = "stopped";
+    setProgress({ done, total, failed, current: "", currentId: "", end });
+    abortRef.current = null;
     setRunning(false);
+  };
+  const stopAll = () => {
+    stopRef.current = true;
+    abortRef.current?.abort();
   };
 
   // ---- unduh ----
@@ -266,12 +317,16 @@ export function Wizard({ docType }: { docType: DocType }) {
   };
 
   const reset = () => {
-    if (window.confirm("Hapus semua isian dan hasil untuk dokumen ini?")) {
+    // T40: bila draf sudah diubah di tab/perangkat lain sejak terakhir dilihat, penghapusan ikut membuang perubahan itu: beri tahu.
+    const msg = isStale() ? "Dokumen ini juga diubah di tab atau perangkat lain sejak terakhir Anda lihat. Hapus semua isian dan hasil, termasuk perubahan itu?" : "Hapus semua isian dan hasil untuk dokumen ini?";
+    if (window.confirm(msg)) {
       // T11: template tetap terpasang, jadi rujukannya (id, versi, pemetaan) ikut dipertahankan di draf kosong.
-      setDraft({ ...EMPTY_DRAFT, template: draft.template ?? null });
+      replaceDraft({ ...EMPTY_DRAFT, template: draft.template ?? null });
       setStripped({});
       setSecErr({});
       setErrors({});
+      setProgress(null);
+      jobIds.current = {};
     }
   };
 
@@ -303,6 +358,26 @@ export function Wizard({ docType }: { docType: DocType }) {
         chapterStyle: tpl.chapterStyle,
       })
     : null;
+
+  // T38: kemajuan antrean "Tulis semua" (bagian selesai = berhasil + gagal).
+  const progressDone = progress ? progress.done + progress.failed : 0;
+  const progressPct = progress && progress.total ? Math.round((progressDone / progress.total) * 100) : 0;
+
+  // T40: nama bagian yang bertabrakan, untuk dialog pilihan.
+  const labelForSlot = (slot: string): string => {
+    const i = slot.indexOf(":");
+    const kind = i < 0 ? slot : slot.slice(0, i);
+    const id = i < 0 ? "" : slot.slice(i + 1);
+    if (kind === "texts") {
+      const s = sections.find((x) => x.id === id);
+      return s ? `Teks: ${resolveTitle(s, effectiveInput)}` : `Teks bagian ${id}`;
+    }
+    if (kind === "input") return `Isian: ${tpl.steps.flatMap((st) => st.fields).find((x) => x.id === id)?.label ?? id}`;
+    if (kind === "sources") return "Daftar sumber";
+    if (kind === "outline") return "Struktur dokumen";
+    if (kind === "template") return "Template kampus";
+    return slot;
+  };
 
   const renderField = (f: FieldDef) => {
     if (f.type === "journal") {
@@ -354,6 +429,7 @@ export function Wizard({ docType }: { docType: DocType }) {
 
   return (
     <div className="space-y-5">
+      {conflicts.length > 0 && <ConflictDialog conflicts={conflicts} labelOf={labelForSlot} onResolve={resolveConflicts} />}
       <div>
         <h1 className="text-2xl font-semibold">{tpl.name}</h1>
         <p className="mt-1 text-sm text-muted">{tpl.description}</p>
@@ -490,7 +566,7 @@ export function Wizard({ docType }: { docType: DocType }) {
               </div>
               <div className="flex flex-wrap gap-2">
                 {running ? (
-                  <button className="btn" onClick={() => (stopRef.current = true)}>
+                  <button className="btn" onClick={stopAll}>
                     Hentikan
                   </button>
                 ) : (
@@ -506,6 +582,21 @@ export function Wizard({ docType }: { docType: DocType }) {
                 </button>
               </div>
             </div>
+            {progress && progress.total > 0 && (
+              <div className="mt-3" aria-live="polite">
+                <div className="flex items-center justify-between gap-2 text-xs text-muted">
+                  <span>
+                    {running
+                      ? `Menulis bagian ${Math.min(progressDone + 1, progress.total)} dari ${progress.total}${progress.current ? `: ${progress.current}` : ""}${stage[progress.currentId] ? ` — ${stage[progress.currentId]}` : ""}`
+                      : `${progress.end === "stopped" ? "Dihentikan" : progress.end === "fatal" ? "Berhenti karena galat" : "Selesai"}: ${progress.done} dari ${progress.total} bagian berhasil${progress.failed ? `, ${progress.failed} gagal` : ""}.${progress.end !== "done" || progress.failed ? " Bagian yang belum selesai bisa dilanjutkan dengan tombol tulis di atas; mencoba ulang bagian yang gagal tidak memotong kuota dua kali." : ""}`}
+                  </span>
+                  <span>{progressPct}%</span>
+                </div>
+                <div role="progressbar" aria-label="Kemajuan penulisan bagian" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progressDone} className="mt-1 h-2 overflow-hidden rounded-full bg-black/10">
+                  <div className="h-full bg-brand transition-all" style={{ width: `${progressPct}%` }} />
+                </div>
+              </div>
+            )}
             {!hasUsableSource && docType !== "RJ" && (
               <p className="mt-3 rounded-md bg-[var(--warn-bg)] p-3 text-sm text-[var(--warn-ink)]">
                 Belum ada sumber berisi di langkah Referensi, jadi AI tidak mengutip apa pun. {docType === "LP" ? "Paragraf teori ditulis umum dan ditandai [perlu referensi]; tanda itu tampil juga di file Word sampai Anda menambah sumber berisi lalu menulis ulang bagiannya." : "Seluruh bagian teori ditulis tanpa rujukan. Tambahkan buku/jurnal beserta isinya di langkah Referensi, lalu tulis ulang bagian yang diperlukan."}
@@ -570,7 +661,7 @@ export function Wizard({ docType }: { docType: DocType }) {
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   {s.kind === "ai" ? (
                     <button className="btn btn-sm" onClick={() => genOne(s)} disabled={!!busy[s.id]}>
-                      <Icon name="spark" className="h-3.5 w-3.5" /> {busy[s.id] ? "Menulis…" : text.trim() ? "Tulis ulang" : "Tulis bagian ini"}
+                      <Icon name="spark" className="h-3.5 w-3.5" /> {busy[s.id] ? stage[s.id] || "Menulis…" : text.trim() ? "Tulis ulang" : "Tulis bagian ini"}
                     </button>
                   ) : s.manual ? null : (
                     <button className="btn btn-sm" onClick={() => setDraft((d) => { const t = { ...d.texts }; delete t[s.id]; return { ...d, texts: t }; })}>
