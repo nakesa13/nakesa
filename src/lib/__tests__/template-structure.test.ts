@@ -234,7 +234,7 @@ describe("T12: daftar pustaka hanya dari sumber yang dikutip (Reference Manager)
       JSON.stringify({ docType: "LK", judul: "Asuhan Uji", style: "APA", identity: { nama: "Mahasiswa Uji" }, sources: [], sections: [{ id: "a", title: "A. Latar", level: 2, kind: "ai", text: "Isi tanpa sumber." }] })
     );
     form.set("mapping", JSON.stringify(analyzeTemplate(styled).suggested));
-    form.set("template", new File([styled], "template.docx"));
+    form.set("template", new File([new Uint8Array(styled)], "template.docx")); // salinan bertipe Uint8Array<ArrayBuffer>: File tidak menerima ArrayBufferLike
     const res = await docxPOST(new Request("http://localhost/api/docx", { method: "POST", body: form, headers: { "x-forwarded-for": "10.88.0.1" } }));
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Nakesa-Warnings")).toContain("pustaka-perlu-diisi");
